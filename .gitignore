@@ -1,0 +1,13 @@
+# Python / build artifacts
+__pycache__/
+*.pyc
+
+# Local build tooling and PyInstaller output
+/.buildvenv/
+/build/
+/dist/
+
+# Packaging output
+/AppDir/
+*.AppImage
+Output/

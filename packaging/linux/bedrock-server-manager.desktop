@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Bedrock Server Manager
+Comment=Manage Minecraft Bedrock Dedicated Servers
+Exec=BedrockServerManager
+Icon=minecraft
+Categories=Game;Utility;
+Terminal=false

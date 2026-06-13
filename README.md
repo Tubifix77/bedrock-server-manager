@@ -4,8 +4,21 @@ A comprehensive GUI application for managing Minecraft Bedrock Dedicated Servers
 
 ![Version](https://img.shields.io/badge/version-1.0.2--Linux-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
-![Platform](https://img.shields.io/badge/platform-Linux-orange)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
+
+---
+
+## ⬇️ Download / Install
+
+**Prebuilt, no Python needed** — grab the latest from the [Releases page](https://github.com/Tubifix77/bedrock-server-manager/releases):
+
+- **Windows:** `BedrockServerManager-<version>-Setup.exe` — installs anywhere you choose, adds Start-menu / desktop shortcuts.
+- **Linux:** `BedrockServerManager-<version>-x86_64.AppImage` — `chmod +x` and run anywhere.
+
+> Artifacts are unsigned, so Windows SmartScreen shows an "unknown publisher" prompt (**More info → Run anyway**).
+
+Prefer to run from source? See **Quick Start** below. Build/release details are in [`packaging/README.md`](packaging/README.md).
 
 ---
 
@@ -46,6 +59,7 @@ To install the desktop launcher, copy `bedrock-server-manager.desktop` to `~/.lo
 |------|-------------|
 | `bedrock_updater_linux.py` | Main application |
 | `bedrock-server-manager.desktop` | Desktop launcher |
+| `packaging/` | Build scripts for the Windows installer & Linux AppImage |
 | `CHANGES.md` | Linux compatibility change log |
 
 ---

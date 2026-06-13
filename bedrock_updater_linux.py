@@ -646,9 +646,14 @@ class BedrockUpdaterApp:
         self.style.configure("Small.TButton", font=("TkDefaultFont", 8))
 
     def set_window_icon(self):
-        """Show minecraft.png as the window/taskbar icon (lives next to this script)."""
+        """Show minecraft.png as the window/taskbar icon.
+
+        Works both from source (icon sits next to this script) and from a
+        PyInstaller bundle (data files are unpacked under sys._MEIPASS).
+        """
         try:
-            icon_path = Path(__file__).resolve().parent / "minecraft.png"
+            base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+            icon_path = base / "minecraft.png"
             if icon_path.exists():
                 # Keep a reference so the image isn't garbage-collected.
                 self._icon_image = tk.PhotoImage(file=str(icon_path))
