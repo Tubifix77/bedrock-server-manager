@@ -32,7 +32,7 @@ import time
 # ============================================================================
 
 APP_NAME = "Bedrock Server Manager"
-APP_VERSION = "1.0.1-Linux"
+APP_VERSION = "1.0.2-Linux"
 APP_AUTHOR = "Tue Wincentz Boas - Built with Claude AI & Gemini 3"
 CONFIG_FILENAME = ".bedrock_updater_config.json"
 MINECRAFT_DOWNLOAD_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
@@ -641,7 +641,19 @@ class BedrockUpdaterApp:
         self.style.configure("Success.TButton", foreground="green")
         self.style.configure("Danger.TButton", foreground="red")
         self.style.configure("Primary.TButton", font=("TkDefaultFont", 10, "bold"))
-        
+
+    def set_window_icon(self):
+        """Show minecraft.png as the window/taskbar icon (lives next to this script)."""
+        try:
+            icon_path = Path(__file__).resolve().parent / "minecraft.png"
+            if icon_path.exists():
+                # Keep a reference so the image isn't garbage-collected.
+                self._icon_image = tk.PhotoImage(file=str(icon_path))
+                # default=True also applies the icon to dialogs and tooltips.
+                self.root.iconphoto(True, self._icon_image)
+        except Exception as e:
+            print(f"Could not set window icon: {e}")
+
     def parse_server_properties(self, filepath: Path) -> Dict[str, str]:
         props = {}
         if filepath.is_dir():
@@ -699,7 +711,8 @@ class BedrockUpdaterApp:
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
         self.root.geometry(self.config.get("window_geometry", "900x700"))
         self.root.minsize(800, 600)
-        
+        self.set_window_icon()
+
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
@@ -1710,7 +1723,9 @@ class ServerPropertiesEditor(ttk.Frame):
 # ============================================================================
 
 def main():
-    root = tk.Tk()
+    # className sets the window's WM_CLASS so Linux desktops (e.g. GNOME) can match
+    # the running window to bedrock-server-manager.desktop and reuse its icon.
+    root = tk.Tk(className="bedrock-server-manager")
     app = BedrockUpdaterApp(root)
     root.mainloop()
 

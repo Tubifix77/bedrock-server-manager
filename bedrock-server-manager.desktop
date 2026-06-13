@@ -8,3 +8,4 @@ Icon=/home/boas/Bedrock/minecraft.png
 Terminal=false
 Categories=Game;Utility;
 StartupNotify=true
+StartupWMClass=Bedrock-server-manager

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-file Python/tkinter desktop GUI for managing Minecraft Bedrock Dedicated Servers
 (update, backup/restore, run/console, world & `server.properties` editing). Despite the
-`_linux` filename and `1.0.1-Linux` version string, the code is genuinely cross-platform —
+`_linux` filename and `1.0.2-Linux` version string, the code is genuinely cross-platform —
 every OS-specific operation branches on `sys.platform == "win32"`.
 
 All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py) (~1700 lines).

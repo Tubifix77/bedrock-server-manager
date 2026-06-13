@@ -2,7 +2,7 @@
 
 A comprehensive GUI application for managing Minecraft Bedrock Dedicated Servers on Linux (Debian 12).
 
-![Version](https://img.shields.io/badge/version-1.0.1--Linux-blue)
+![Version](https://img.shields.io/badge/version-1.0.2--Linux-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![Platform](https://img.shields.io/badge/platform-Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
