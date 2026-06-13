@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Bedrock Server Manager
+Comment=Manage Minecraft Bedrock Dedicated Server
+Exec=python3 /home/boas/Bedrock/bedrock_updater_linux.py
+Icon=/home/boas/Bedrock/minecraft.png
+Terminal=false
+Categories=Game;Utility;
+StartupNotify=true
