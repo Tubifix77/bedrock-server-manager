@@ -641,6 +641,9 @@ class BedrockUpdaterApp:
         self.style.configure("Success.TButton", foreground="green")
         self.style.configure("Danger.TButton", foreground="red")
         self.style.configure("Primary.TButton", font=("TkDefaultFont", 10, "bold"))
+        # Green step arrows and compact secondary buttons for the Update tab.
+        self.style.configure("Arrow.TLabel", foreground="#4CAF50", font=("TkDefaultFont", 13, "bold"))
+        self.style.configure("Small.TButton", font=("TkDefaultFont", 8))
 
     def set_window_icon(self):
         """Show minecraft.png as the window/taskbar icon (lives next to this script)."""
@@ -816,12 +819,23 @@ class BedrockUpdaterApp:
         
         button_frame = ttk.Frame(self.main_tab)
         button_frame.grid(row=5, column=0, sticky="ew", pady=5)
-        ttk.Button(button_frame, text="📋 Dry Run", command=self.dry_run).pack(side=tk.LEFT, padx=5)
-        self.update_button = ttk.Button(button_frame, text="🚀 Update Server", command=self.start_update, style="Primary.TButton")
-        self.update_button.pack(side=tk.LEFT, padx=20)
-        ttk.Button(button_frame, text="📂 Open Folder", command=self.open_server_folder).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="🌐 Wiki Version", command=self.manual_version_input).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="⬇️ Download Latest", command=self.open_download_page).pack(side=tk.RIGHT, padx=5)
+
+        # Normal update procedure, laid out as numbered steps 1 -> 2 -> 3 (left).
+        steps = ttk.Frame(button_frame)
+        steps.pack(side=tk.LEFT)
+        ttk.Label(steps, text="To update:", font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(steps, text="1:  🌐 Wiki Version", command=self.manual_version_input).pack(side=tk.LEFT)
+        ttk.Label(steps, text="→", style="Arrow.TLabel").pack(side=tk.LEFT, padx=5)
+        ttk.Button(steps, text="2:  ⬇️ Download Latest", command=self.open_download_page).pack(side=tk.LEFT)
+        ttk.Label(steps, text="→", style="Arrow.TLabel").pack(side=tk.LEFT, padx=5)
+        self.update_button = ttk.Button(steps, text="3:  🚀 Update Server", command=self.start_update, style="Primary.TButton")
+        self.update_button.pack(side=tk.LEFT)
+
+        # Secondary, occasional actions: smaller and tucked to the right.
+        extras = ttk.Frame(button_frame)
+        extras.pack(side=tk.RIGHT)
+        ttk.Button(extras, text="📂 Open Folder", command=self.open_server_folder, style="Small.TButton").pack(side=tk.RIGHT, padx=2)
+        ttk.Button(extras, text="📋 Dry Run", command=self.dry_run, style="Small.TButton").pack(side=tk.RIGHT, padx=2)
         
         log_frame = ttk.LabelFrame(self.main_tab, text="Activity Log", padding=5)
         log_frame.grid(row=6, column=0, sticky="nsew", pady=5)
