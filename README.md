@@ -42,13 +42,14 @@ Prefer to run from source? See **Quick Start** below. Build/release details are 
 
 ## 🚀 Quick Start (from source)
 
+**Linux:**
 ```bash
-# Linux
 sudo apt install python3 python3-tk -y
-chmod +x bedrock_updater_linux.py
 python3 bedrock_updater_linux.py
+```
 
-# Windows
+**Windows:**
+```powershell
 python bedrock_updater_linux.py
 ```
 
@@ -63,7 +64,7 @@ To install the desktop launcher on Linux, copy `bedrock-server-manager.desktop` 
 | `bedrock_updater_linux.py` | Main application |
 | `bedrock-server-manager.desktop` | Linux desktop launcher |
 | `packaging/` | Build scripts for the Windows installer & Linux AppImage |
-| `CHANGES.md` | Change log |
+| `CHANGES.md` | Changelog |
 
 ---
 
