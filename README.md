@@ -1,8 +1,8 @@
-# Bedrock Server Manager for Linux
+# Bedrock Server Manager
 
-A comprehensive GUI application for managing Minecraft Bedrock Dedicated Servers on Linux (Debian 12).
+A comprehensive cross-platform GUI application for managing Minecraft Bedrock Dedicated Servers.
 
-![Version](https://img.shields.io/badge/version-1.0.2--Linux-blue)
+![Version](https://img.shields.io/badge/version-1.0.2-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -29,27 +29,30 @@ Prefer to run from source? See **Quick Start** below. Build/release details are 
 - **Backup management** — create, restore, auto-cleanup, optional compression
 - **World browser** — view worlds, switch active world, see sizes and dates
 - **Server properties editor** — edit `server.properties` in GUI
-- **Cross-platform** — works on Linux (primary) and Windows
+- **Cross-platform** — Windows and Linux
 
 ---
 
-## 📋 Requirements
+## 📋 Requirements (running from source)
 
-- Debian 12 (Bookworm) or similar Debian-based distro
 - Python 3.11+
-- `python3-tk` (`sudo apt install python3-tk`)
+- `tkinter` — on Debian/Ubuntu: `sudo apt install python3-tk`
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (from source)
 
 ```bash
+# Linux
 sudo apt install python3 python3-tk -y
 chmod +x bedrock_updater_linux.py
 python3 bedrock_updater_linux.py
+
+# Windows
+python bedrock_updater_linux.py
 ```
 
-To install the desktop launcher, copy `bedrock-server-manager.desktop` to `~/.local/share/applications/` and update the `Exec=` path if needed.
+To install the desktop launcher on Linux, copy `bedrock-server-manager.desktop` to `~/.local/share/applications/` and update the `Exec=` path if needed.
 
 ---
 
@@ -58,15 +61,15 @@ To install the desktop launcher, copy `bedrock-server-manager.desktop` to `~/.lo
 | File | Description |
 |------|-------------|
 | `bedrock_updater_linux.py` | Main application |
-| `bedrock-server-manager.desktop` | Desktop launcher |
+| `bedrock-server-manager.desktop` | Linux desktop launcher |
 | `packaging/` | Build scripts for the Windows installer & Linux AppImage |
-| `CHANGES.md` | Linux compatibility change log |
+| `CHANGES.md` | Change log |
 
 ---
 
 ## 🔧 Configuration
 
-Stored at `~/.config/bedrock-updater/.bedrock_updater_config.json`. Logs at `~/.local/share/bedrock-updater/logs/`.
+Stored at `~/.config/bedrock-updater/` (Linux) or `%APPDATA%\bedrock-updater\` (Windows). Logs in the same folder.
 
 ---
 
