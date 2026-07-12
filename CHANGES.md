@@ -21,6 +21,9 @@ Full layout rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md).
   Active Server Configuration.
 - **Set as Active World** on the Worlds tab can switch while the Server runs: after a
   confirmation it stops the Server nicely, switches, and starts it again on the new World.
+  When the Server is stopped it switches instantly and confirms it did. The Active World is
+  now marked **✅ ACTIVE** in the Worlds list and **✅ (active)** in the Server-tab dropdown, so
+  it's always obvious which World is current.
 - `server-name` in Active Server Configuration now carries a hint: *(the name players see in
   their server list)*.
 - **Update stops the Server nicely, in the background** — the graceful stop now runs inside

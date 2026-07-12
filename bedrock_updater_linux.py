@@ -994,7 +994,9 @@ class BedrockUpdaterApp:
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
         columns = ("name", "size", "last_modified", "version")
-        self.world_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=10)
+        self.world_tree = ttk.Treeview(list_frame, columns=columns, show="tree headings", height=10)
+        self.world_tree.heading("#0", text="")
+        self.world_tree.column("#0", width=90, anchor="center", stretch=False)
         self.world_tree.heading("name", text="World Name")
         self.world_tree.heading("size", text="Size")
         self.world_tree.heading("last_modified", text="Last Modified")
@@ -1033,8 +1035,10 @@ class BedrockUpdaterApp:
         current = props.get("level-name", "")
         if current and current not in worlds:
             worlds = worlds + [current]  # created but not generated yet
-        self.world_combo.config(values=worlds)
-        self.world_combo.set(current)
+        # Label the active one in the dropdown, but keep the raw name as the stored value.
+        self._world_combo_map = {(f"{w}   ✅ (active)" if w == current else w): w for w in worlds}
+        self.world_combo.config(values=list(self._world_combo_map.keys()))
+        self.world_combo.set(f"{current}   ✅ (active)" if current in worlds else current)
 
     def set_active_world(self, new_name: str) -> bool:
         """Point level-name at a world folder; takes effect on next Server start."""
@@ -1054,7 +1058,8 @@ class BedrockUpdaterApp:
         return False
 
     def on_world_selected(self, event=None):
-        new_name = self.world_combo.get()
+        picked = self.world_combo.get()
+        new_name = getattr(self, '_world_combo_map', {}).get(picked, picked)
         if not new_name:
             return
         if self.server_manager and self.server_manager.is_running():
@@ -1089,11 +1094,15 @@ class BedrockUpdaterApp:
         else:
             if self.set_active_world(name):
                 self.refresh_world_combo()
+                self.refresh_worlds()
+                messagebox.showinfo("Active World",
+                    f"'{name}' is now the Active World.\nStart the Server to load it.")
 
     def _finish_world_switch(self, name: str):
         """Runs on the UI thread after the Server stopped: switch world, start again."""
         if self.set_active_world(name):
             self.refresh_world_combo()
+            self.refresh_worlds()
             self.log(f"Starting the Server on '{name}'...", "info")
             self.start_server()
 
@@ -1817,18 +1826,24 @@ class BedrockUpdaterApp:
         for item in self.world_tree.get_children():
             self.world_tree.delete(item)
         server_path = Path(self.server_entry.get())
+        props = self.parse_server_properties(server_path / "server.properties")
+        active = props.get("level-name", "")
         existing = set()
         for world in get_world_info(server_path):
             existing.add(world["name"])
-            self.world_tree.insert("", tk.END, values=(world["name"], world["size"], world["last_modified"], world["version"]))
+            is_active = world["name"] == active
+            self.world_tree.insert("", tk.END,
+                                   text="✅ ACTIVE" if is_active else "",
+                                   values=(world["name"], world["size"], world["last_modified"], world["version"]),
+                                   tags=("active",) if is_active else ())
         # The Active World may be created-but-not-generated: show it as a pending row
         # so a freshly created World is visibly "there" before its first start.
-        props = self.parse_server_properties(server_path / "server.properties")
-        active = props.get("level-name", "")
         if active and active not in existing:
-            self.world_tree.insert("", 0, values=(active, "—", "created on next start", "⏳ configure, then Start"),
-                                   tags=("pending",))
-            self.world_tree.tag_configure("pending", foreground="#FF9800")
+            self.world_tree.insert("", 0, text="✅ ACTIVE",
+                                   values=(active, "—", "created on next start", "⏳ configure, then Start"),
+                                   tags=("pending", "active"))
+        self.world_tree.tag_configure("pending", foreground="#FF9800")
+        self.world_tree.tag_configure("active", font=("TkDefaultFont", 9, "bold"))
     
     def on_world_select(self, event):
         selected = self.world_tree.selection()
