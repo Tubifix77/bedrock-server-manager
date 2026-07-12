@@ -32,7 +32,7 @@ import time
 # ============================================================================
 
 APP_NAME = "Bedrock Server Manager"
-APP_VERSION = "1.0.2-Linux"
+APP_VERSION = "1.0.3-Linux"
 APP_AUTHOR = "Tue Wincentz Boas - Built with Claude AI & Gemini 3"
 CONFIG_FILENAME = ".bedrock_updater_config.json"
 MINECRAFT_DOWNLOAD_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
@@ -227,6 +227,44 @@ def detect_server_version(server_path: Path) -> str:
             pass
     return "Unknown"
 
+def parse_version_tuple(version_str: str) -> Tuple[int, ...]:
+    """'1.26.32.02' -> (1, 26, 32, 2) for safe comparisons."""
+    try:
+        parts = re.findall(r'\d+', str(version_str))
+        return tuple(int(p) for p in parts[:4]) if parts else ()
+    except Exception:
+        return ()
+
+def get_world_last_opened_version(world_dir: Path) -> str:
+    """Read lastOpenedWithVersion from a Bedrock world's level.dat.
+
+    level.dat is little-endian NBT: the tag appears as
+    TAG_List(0x09) + name-length(int16 LE) + name, then item type
+    TAG_Int(0x03) + count(int32 LE) + count*int32 LE version parts.
+    A world won't load on a Bedrock Server Version older than this.
+    """
+    level_dat = world_dir / "level.dat"
+    if not level_dat.exists():
+        return "Unknown"
+    try:
+        data = level_dat.read_bytes()
+        idx = data.find(b"lastOpenedWithVersion")
+        if idx < 3 or data[idx - 3] != 9:
+            return "Unknown"
+        pos = idx + len(b"lastOpenedWithVersion")
+        item_type = data[pos]
+        count = int.from_bytes(data[pos + 1:pos + 5], "little")
+        if item_type != 3 or not (1 <= count <= 6):
+            return "Unknown"
+        pos += 5
+        nums = [int.from_bytes(data[pos + i * 4:pos + i * 4 + 4], "little", signed=True)
+                for i in range(count)]
+        while len(nums) > 3 and nums[-1] == 0:
+            nums.pop()
+        return ".".join(str(n) for n in nums)
+    except Exception:
+        return "Unknown"
+
 def make_executable(file_path: Path):
     """Make a file executable on Unix systems."""
     if sys.platform != "win32":
@@ -257,7 +295,8 @@ def get_world_info(server_path: Path) -> List[Dict]:
                 world_info = {
                     "name": world_dir.name,
                     "size": format_size(get_folder_size(world_dir)),
-                    "last_modified": "Unknown"
+                    "last_modified": "Unknown",
+                    "version": get_world_last_opened_version(world_dir)
                 }
                 if level_dat.exists():
                     try:
@@ -724,25 +763,26 @@ class BedrockUpdaterApp:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.main_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.main_tab, text="🔄 Update")
-        self.setup_main_tab()
-        
+        # Tab order: daily use first — Server is the home tab.
         self.server_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.server_tab, text="🎮 Server")
         self.setup_server_tab()
-        
-        self.backup_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.backup_tab, text="💾 Backups")
-        self.setup_backup_tab()
-        
+
         self.worlds_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.worlds_tab, text="🌍 Worlds")
         self.setup_worlds_tab()
 
         self.properties_editor = ServerPropertiesEditor(self.notebook, self)
-        self.notebook.add(self.properties_editor, text="📝 Properties") 
-        
+        self.notebook.add(self.properties_editor, text="📝 Active Server Configuration")
+
+        self.backup_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.backup_tab, text="💾 Backups")
+        self.setup_backup_tab()
+
+        self.main_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.main_tab, text="🔄 Update")
+        self.setup_main_tab()
+
         self.settings_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.settings_tab, text="⚙️ Settings")
         self.setup_settings_tab()
@@ -756,19 +796,15 @@ class BedrockUpdaterApp:
     
     def setup_main_tab(self):
         self.main_tab.columnconfigure(0, weight=1)
-        self.main_tab.rowconfigure(3, weight=1)
         
         header = ttk.Frame(self.main_tab)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         ttk.Label(header, text="Update Bedrock Server", font=("TkDefaultFont", 14, "bold")).pack(side=tk.LEFT)
-        self.dark_mode_var = tk.BooleanVar(value=self.config.get("dark_mode", False))
-        ttk.Checkbutton(header, text="🌙 Dark", variable=self.dark_mode_var, command=self.toggle_dark_mode).pack(side=tk.RIGHT)
-        
         file_frame = ttk.LabelFrame(self.main_tab, text="File Selection", padding=10)
         file_frame.grid(row=1, column=0, sticky="ew", pady=5)
         file_frame.columnconfigure(1, weight=1)
         
-        ttk.Label(file_frame, text="New Server ZIP:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        ttk.Label(file_frame, text="New Bedrock Server Version (ZIP):").grid(row=0, column=0, sticky="e", padx=5, pady=5)
         self.zip_entry = ttk.Entry(file_frame)
         self.zip_entry.grid(row=0, column=1, sticky="ew", padx=5)
         self.zip_entry.bind("<KeyRelease>", self.validate_inputs)
@@ -776,42 +812,8 @@ class BedrockUpdaterApp:
         self.zip_status = ttk.Label(file_frame, text="", foreground="gray")
         self.zip_status.grid(row=1, column=1, sticky="w", padx=5)
         
-        ttk.Label(file_frame, text="Server Folder:").grid(row=2, column=0, sticky="e", padx=5, pady=5)
-        self.server_entry = ttk.Entry(file_frame)
-        self.server_entry.grid(row=2, column=1, sticky="ew", padx=5)
-        self.server_entry.bind("<KeyRelease>", self.validate_inputs)
-        ttk.Button(file_frame, text="Browse", command=self.browse_server).grid(row=2, column=2, padx=5)
-        self.server_status = ttk.Label(file_frame, text="", foreground="gray")
-        self.server_status.grid(row=3, column=1, sticky="w", padx=5)
-        
-        self.info_frame = ttk.LabelFrame(self.main_tab, text="Server Information", padding=10)
-        self.info_frame.grid(row=2, column=0, sticky="ew", pady=5)
-        self.info_text = ttk.Label(self.info_frame, text="Select a server folder to view information.")
-        self.info_text.pack(anchor="w")
-        
-        preserve_frame = ttk.LabelFrame(self.main_tab, text="Files to Preserve", padding=10)
-        preserve_frame.grid(row=3, column=0, sticky="nsew", pady=5)
-        canvas = tk.Canvas(preserve_frame, height=120)
-        scrollbar = ttk.Scrollbar(preserve_frame, orient="vertical", command=canvas.yview)
-        self.preserve_inner = ttk.Frame(canvas)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        canvas.create_window((0, 0), window=self.preserve_inner, anchor="nw")
-        self.preserve_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        
-        col, row = 0, 0
-        for item, props in self.config["preserve_items"].items():
-            var = tk.BooleanVar(value=props["enabled"])
-            self.preserve_vars[item] = var
-            text = f"⭐ {item}" if props.get("critical") else item
-            cb = ttk.Checkbutton(self.preserve_inner, text=text, variable=var)
-            cb.grid(row=row, column=col, sticky="w", padx=10, pady=2)
-            self.create_tooltip(cb, props["description"])
-            col += 1
-            if col >= 3:
-                col = 0
-                row += 1
+        self.update_installed_label = ttk.Label(file_frame, text="Installed Bedrock Server Version: —", foreground="gray")
+        self.update_installed_label.grid(row=2, column=1, sticky="w", padx=5, pady=(4, 0))
         
         progress_frame = ttk.Frame(self.main_tab)
         progress_frame.grid(row=4, column=0, sticky="ew", pady=10)
@@ -858,13 +860,17 @@ class BedrockUpdaterApp:
         self.log_text.tag_config("success", foreground="#4CAF50")
         self.log_text.tag_config("warning", foreground="#FF9800")
         self.log_text.tag_config("error", foreground="#F44336")
-        self.log("Application started. Select a server folder to begin.", "info")
+        self.log("Application started. (First time? Set your Server Folder in ⚙️ Settings.)", "info")
     
     def setup_server_tab(self):
         self.server_tab.columnconfigure(0, weight=1)
-        self.server_tab.rowconfigure(1, weight=1)
+        self.server_tab.rowconfigure(2, weight=1)
+        info_frame = ttk.LabelFrame(self.server_tab, text="Active Server Information", padding=10)
+        info_frame.grid(row=0, column=0, sticky="ew", pady=5)
+        self.info_text = ttk.Label(info_frame, text="No Server selected — set the Server Folder in ⚙️ Settings.")
+        self.info_text.pack(anchor="w")
         control_frame = ttk.LabelFrame(self.server_tab, text="Server Control", padding=10)
-        control_frame.grid(row=0, column=0, sticky="ew", pady=5)
+        control_frame.grid(row=1, column=0, sticky="ew", pady=5)
         btn_frame = ttk.Frame(control_frame)
         btn_frame.pack(fill=tk.X)
         self.start_btn = ttk.Button(btn_frame, text="▶️ Start", command=self.start_server, width=15)
@@ -875,18 +881,26 @@ class BedrockUpdaterApp:
         self.restart_btn.pack(side=tk.LEFT, padx=5)
         self.server_running_label = ttk.Label(btn_frame, text="⬤ Stopped", foreground="red")
         self.server_running_label.pack(side=tk.RIGHT, padx=20)
+        world_frame = ttk.Frame(control_frame)
+        world_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(world_frame, text="Active World:").pack(side=tk.LEFT)
+        self.world_combo = ttk.Combobox(world_frame, state="readonly", width=32)
+        self.world_combo.pack(side=tk.LEFT, padx=8)
+        self.world_combo.bind("<<ComboboxSelected>>", self.on_world_selected)
+        ttk.Label(world_frame, text="(switch while stopped — takes effect on next start)",
+                  font=("TkDefaultFont", 8), foreground="gray").pack(side=tk.LEFT)
         net_frame = ttk.Frame(control_frame)
         net_frame.pack(fill=tk.X, pady=(10, 0))
         self.network_label = ttk.Label(net_frame, text="Network: Not configured")
         self.network_label.pack(side=tk.LEFT)
         ttk.Button(net_frame, text="📋 Copy IP", command=self.copy_server_ip).pack(side=tk.RIGHT)
         console_frame = ttk.LabelFrame(self.server_tab, text="Server Console", padding=5)
-        console_frame.grid(row=1, column=0, sticky="nsew", pady=5)
+        console_frame.grid(row=2, column=0, sticky="nsew", pady=5)
         console_frame.columnconfigure(0, weight=1)
         console_frame.rowconfigure(0, weight=1)
         console_scroll = ttk.Scrollbar(console_frame)
         console_scroll.grid(row=0, column=1, sticky="ns")
-        self.console_text = tk.Text(console_frame, wrap=tk.WORD, state=tk.DISABLED,
+        self.console_text = tk.Text(console_frame, height=10, wrap=tk.WORD, state=tk.DISABLED,
                                    font=("Consolas" if sys.platform == "win32" else "Monaco", self.config.get("console_font_size", 9)),
                                    bg="#1e1e1e", fg="#ffffff", insertbackground="#ffffff")
         self.console_text.grid(row=0, column=0, sticky="nsew")
@@ -907,19 +921,44 @@ class BedrockUpdaterApp:
     
     def setup_backup_tab(self):
         self.backup_tab.columnconfigure(0, weight=1)
-        self.backup_tab.rowconfigure(1, weight=1)
+        self.backup_tab.rowconfigure(3, weight=1)
+        self.backup_header_label = ttk.Label(self.backup_tab, text="Backups for: (no Server selected)",
+                                             font=("TkDefaultFont", 10, "bold"))
+        self.backup_header_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
         control_frame = ttk.Frame(self.backup_tab)
-        control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        control_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         ttk.Button(control_frame, text="💾 Create Backup Now", command=self.manual_backup).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="🧹 Cleanup Old Backups", command=self.cleanup_backups).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="📂 Open Folder", command=self.open_backup_folder).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="🔄 Refresh", command=self.refresh_backups).pack(side=tk.RIGHT, padx=5)
+        preserve_frame = ttk.LabelFrame(self.backup_tab, text="What to back up (also what updates preserve)", padding=10)
+        preserve_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        canvas = tk.Canvas(preserve_frame, height=120)
+        scrollbar = ttk.Scrollbar(preserve_frame, orient="vertical", command=canvas.yview)
+        self.preserve_inner = ttk.Frame(canvas)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        canvas.create_window((0, 0), window=self.preserve_inner, anchor="nw")
+        self.preserve_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        col, row = 0, 0
+        for item, props in self.config["preserve_items"].items():
+            var = tk.BooleanVar(value=props["enabled"])
+            self.preserve_vars[item] = var
+            text = f"⭐ {item}" if props.get("critical") else item
+            cb = ttk.Checkbutton(self.preserve_inner, text=text, variable=var)
+            cb.grid(row=row, column=col, sticky="w", padx=10, pady=2)
+            self.create_tooltip(cb, props["description"])
+            col += 1
+            if col >= 3:
+                col = 0
+                row += 1
         list_frame = ttk.LabelFrame(self.backup_tab, text="Available Backups", padding=10)
-        list_frame.grid(row=1, column=0, sticky="nsew")
+        list_frame.grid(row=3, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
         columns = ("name", "date", "size")
-        self.backup_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=15)
+        self.backup_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=5)
         self.backup_tree.heading("name", text="Backup Name")
         self.backup_tree.heading("date", text="Date Created")
         self.backup_tree.heading("size", text="Size")
@@ -931,7 +970,7 @@ class BedrockUpdaterApp:
         self.backup_tree.grid(row=0, column=0, sticky="nsew")
         backup_scroll.grid(row=0, column=1, sticky="ns")
         action_frame = ttk.Frame(self.backup_tab)
-        action_frame.grid(row=2, column=0, sticky="ew", pady=10)
+        action_frame.grid(row=4, column=0, sticky="ew", pady=10)
         ttk.Button(action_frame, text="🔄 Restore Selected", command=self.restore_selected_backup).pack(side=tk.LEFT, padx=5)
         ttk.Button(action_frame, text="❌ Delete Selected", command=self.delete_selected_backup).pack(side=tk.LEFT, padx=5)
         ttk.Button(action_frame, text="📂 Open in Explorer", command=self.open_selected_backup).pack(side=tk.LEFT, padx=5)
@@ -941,68 +980,204 @@ class BedrockUpdaterApp:
         self.worlds_tab.rowconfigure(1, weight=1)
         control_frame = ttk.Frame(self.worlds_tab)
         control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(control_frame, text="🔄 Refresh", command=self.refresh_worlds).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="📂 Open Worlds Folder", command=self.open_worlds_folder).pack(side=tk.LEFT, padx=5)
-        list_frame = ttk.LabelFrame(self.worlds_tab, text="Worlds", padding=10)
+        ttk.Button(control_frame, text="✨ Create New World", command=self.create_new_world,
+                   style="Primary.TButton").pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="🔄 Refresh", command=self.refresh_worlds).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(control_frame, text="📂 Open Worlds Folder", command=self.open_worlds_folder).pack(side=tk.RIGHT, padx=5)
+        list_frame = ttk.LabelFrame(self.worlds_tab, text="Worlds on this Server", padding=10)
         list_frame.grid(row=1, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
-        columns = ("name", "size", "last_modified")
+        columns = ("name", "size", "last_modified", "version")
         self.world_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=10)
         self.world_tree.heading("name", text="World Name")
         self.world_tree.heading("size", text="Size")
         self.world_tree.heading("last_modified", text="Last Modified")
-        self.world_tree.column("name", width=300)
-        self.world_tree.column("size", width=100)
-        self.world_tree.column("last_modified", width=150)
+        self.world_tree.heading("version", text="Last Run On")
+        self.world_tree.column("name", width=240)
+        self.world_tree.column("size", width=90)
+        self.world_tree.column("last_modified", width=140)
+        self.world_tree.column("version", width=140)
         world_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.world_tree.yview)
         self.world_tree.configure(yscrollcommand=world_scroll.set)
         self.world_tree.grid(row=0, column=0, sticky="nsew")
         world_scroll.grid(row=0, column=1, sticky="ns")
-        info_frame = ttk.LabelFrame(self.worlds_tab, text="World Details", padding=10)
-        info_frame.grid(row=2, column=0, sticky="ew", pady=5)
-        self.world_info_label = ttk.Label(info_frame, text="Select a world to view details.")
-        self.world_info_label.pack(anchor="w")
         self.world_tree.bind("<<TreeviewSelect>>", self.on_world_select)
-        world_mgmt_frame = ttk.LabelFrame(self.worlds_tab, text="Active World Management", padding=10)
-        world_mgmt_frame.grid(row=3, column=0, sticky="ew", pady=10)
-        ttk.Label(world_mgmt_frame, text="Current Active World / Create New Name:").pack(anchor="w")
-        entry_frame = ttk.Frame(world_mgmt_frame)
-        entry_frame.pack(fill=tk.X, pady=5)
-        self.level_name_entry = ttk.Entry(entry_frame)
-        self.level_name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
-        ttk.Button(entry_frame, text="Set Active / Create", command=self.quick_save_level_name).pack(side=tk.RIGHT)
-        ttk.Label(world_mgmt_frame, text="Note: Changing this will make the server load (or create) that world folder.",
-                  font=("TkDefaultFont", 8), foreground="gray").pack(anchor="w")
-        self.refresh_active_world_display()
+        action_frame = ttk.Frame(self.worlds_tab)
+        action_frame.grid(row=2, column=0, sticky="ew", pady=10)
+        ttk.Button(action_frame, text="🎯 Set as Active World", command=self.set_selected_world_active).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="✏️ Rename", command=self.rename_selected_world).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="🗑️ Delete", command=self.delete_selected_world).pack(side=tk.LEFT, padx=5)
+        self.world_info_label = ttk.Label(
+            self.worlds_tab,
+            text="A World's save is upgraded by the version that runs it — it won't load on an older Bedrock Server Version.",
+            font=("TkDefaultFont", 8), foreground="gray")
+        self.world_info_label.grid(row=3, column=0, sticky="w")
     
-    def refresh_active_world_display(self):
+    def refresh_world_combo(self):
+        """Fill the Active World dropdown from the Server's worlds folder."""
+        if not hasattr(self, 'world_combo'):
+            return
         server_path = self.server_entry.get()
-        if server_path:
-            props = self.parse_server_properties(Path(server_path) / "server.properties")
-            current_name = props.get("level-name", "Bedrock Level")
-            self.level_name_entry.delete(0, tk.END)
-            self.level_name_entry.insert(0, current_name)
+        if not server_path or not Path(server_path).exists():
+            self.world_combo.config(values=[])
+            self.world_combo.set("")
+            return
+        worlds = [w["name"] for w in get_world_info(Path(server_path))]
+        props = self.parse_server_properties(Path(server_path) / "server.properties")
+        current = props.get("level-name", "")
+        if current and current not in worlds:
+            worlds = worlds + [current]  # created but not generated yet
+        self.world_combo.config(values=worlds)
+        self.world_combo.set(current)
 
-    def quick_save_level_name(self):
+    def set_active_world(self, new_name: str) -> bool:
+        """Point level-name at a world folder; takes effect on next Server start."""
         server_path = self.server_entry.get()
-        new_name = self.level_name_entry.get().strip()
-        if not server_path or not new_name: return
+        if not server_path or not new_name:
+            return False
         props_path = Path(server_path) / "server.properties"
         props = self.parse_server_properties(props_path)
         props["level-name"] = new_name
         if self.save_server_properties(props_path, props):
-            self.log(f"Active world changed to: {new_name}", "success")
-            messagebox.showinfo("World Updated", f"Server will now use world: {new_name}")
+            self.log(f"Active World set to: {new_name} (takes effect on next start)", "success")
             if hasattr(self, 'properties_editor'):
                 self.properties_editor.load_properties()
-        else:
-            messagebox.showerror("Error", "Could not update world name.")
-    
+            self.update_server_info()
+            return True
+        messagebox.showerror("Error", "Could not update the Active World.")
+        return False
+
+    def on_world_selected(self, event=None):
+        new_name = self.world_combo.get()
+        if not new_name:
+            return
+        if self.server_manager and self.server_manager.is_running():
+            messagebox.showwarning("Server Running", "Stop the Server before switching the Active World.")
+            self.refresh_world_combo()
+            return
+        self.set_active_world(new_name)
+
+    def set_selected_world_active(self):
+        selected = self.world_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "No World selected.")
+            return
+        name = str(self.world_tree.item(selected[0])["values"][0])
+        if self.server_manager and self.server_manager.is_running():
+            messagebox.showwarning("Server Running", "Stop the Server before switching the Active World.")
+            return
+        if self.set_active_world(name):
+            self.refresh_world_combo()
+
+    def create_new_world(self):
+        server_path = self.server_entry.get()
+        if not server_path or not Path(server_path).exists():
+            messagebox.showwarning("Warning", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+            return
+        if self.server_manager and self.server_manager.is_running():
+            messagebox.showwarning("Server Running", "Stop the Server before creating a new World.")
+            return
+        name = simpledialog.askstring("Create New World", "Name of the new World:", parent=self.root)
+        if not name:
+            return
+        name = name.strip()
+        if not name or any(c in name for c in '/\\:*?"<>|'):
+            messagebox.showerror("Invalid Name", "The World name is empty or contains invalid characters.")
+            return
+        existing = [w["name"] for w in get_world_info(Path(server_path))]
+        if name in existing:
+            if not messagebox.askyesno("World Exists", f"'{name}' already exists.\n\nSet it as the Active World instead?"):
+                return
+        if self.set_active_world(name):
+            self.refresh_world_combo()
+            self.refresh_worlds()
+            if name not in existing:
+                messagebox.showinfo("World Created",
+                    f"'{name}' is now the Active World.\n\n"
+                    "Bedrock will generate it the first time you start the Server.\n"
+                    "Tip: review 📝 Active Server Configuration (seed, gamemode, difficulty)\n"
+                    "before the first start — that's when they shape the new World.")
+
+    def rename_selected_world(self):
+        selected = self.world_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "No World selected.")
+            return
+        old_name = str(self.world_tree.item(selected[0])["values"][0])
+        server_path = self.server_entry.get()
+        if not server_path:
+            return
+        if self.server_manager and self.server_manager.is_running():
+            messagebox.showwarning("Server Running", "Stop the Server before renaming a World.")
+            return
+        new_name = simpledialog.askstring("Rename World", f"New name for '{old_name}':", parent=self.root)
+        if not new_name:
+            return
+        new_name = new_name.strip()
+        if not new_name or any(c in new_name for c in '/\\:*?"<>|'):
+            messagebox.showerror("Invalid Name", "The World name is empty or contains invalid characters.")
+            return
+        worlds_dir = Path(server_path) / "worlds"
+        if (worlds_dir / new_name).exists():
+            messagebox.showerror("Exists", f"A World named '{new_name}' already exists.")
+            return
+        try:
+            (worlds_dir / old_name).rename(worlds_dir / new_name)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not rename World:\n{e}")
+            return
+        props = self.parse_server_properties(Path(server_path) / "server.properties")
+        if props.get("level-name") == old_name:
+            self.set_active_world(new_name)
+        self.log(f"Renamed World '{old_name}' to '{new_name}'", "success")
+        self.refresh_worlds()
+        self.refresh_world_combo()
+
+    def delete_selected_world(self):
+        selected = self.world_tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "No World selected.")
+            return
+        name = str(self.world_tree.item(selected[0])["values"][0])
+        server_path = self.server_entry.get()
+        if not server_path:
+            return
+        props = self.parse_server_properties(Path(server_path) / "server.properties")
+        if name == props.get("level-name"):
+            messagebox.showwarning("Active World", "You can't delete the Active World. Switch to another World first.")
+            return
+        if self.server_manager and self.server_manager.is_running():
+            messagebox.showwarning("Server Running", "Stop the Server before deleting a World.")
+            return
+        if not messagebox.askyesno("Delete World",
+                f"Permanently delete the World '{name}'?\n\nThis cannot be undone (older backups may still contain it)."):
+            return
+        try:
+            shutil.rmtree(Path(server_path) / "worlds" / name)
+            self.log(f"Deleted World: {name}", "info")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not delete World:\n{e}")
+        self.refresh_worlds()
+        self.refresh_world_combo()
+        self.update_server_info()
+
     def setup_settings_tab(self):
         self.settings_tab.columnconfigure(0, weight=1)
+        location_frame = ttk.LabelFrame(self.settings_tab, text="Server Location", padding=10)
+        location_frame.grid(row=0, column=0, sticky="ew", pady=5)
+        location_frame.columnconfigure(1, weight=1)
+        ttk.Label(location_frame, text="Server Folder:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        self.server_entry = ttk.Entry(location_frame)
+        self.server_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        self.server_entry.bind("<KeyRelease>", self.validate_inputs)
+        ttk.Button(location_frame, text="Browse", command=self.browse_server).grid(row=0, column=2, padx=5)
+        self.server_status = ttk.Label(location_frame, text="", foreground="gray")
+        self.server_status.grid(row=1, column=1, sticky="w", padx=5)
+        ttk.Label(location_frame, text="One-time setup: the folder that holds (or will hold) your Bedrock server.",
+                  font=("TkDefaultFont", 8), foreground="gray").grid(row=2, column=1, sticky="w", padx=5)
         backup_frame = ttk.LabelFrame(self.settings_tab, text="Backup Settings", padding=10)
-        backup_frame.grid(row=0, column=0, sticky="ew", pady=5)
+        backup_frame.grid(row=1, column=0, sticky="ew", pady=5)
         ttk.Label(backup_frame, text="Maximum backups to keep:").grid(row=0, column=0, sticky="w", pady=5)
         self.max_backups_var = tk.IntVar(value=self.config.get("max_backups", 5))
         ttk.Spinbox(backup_frame, from_=1, to=50, width=10, textvariable=self.max_backups_var).grid(row=0, column=1, sticky="w", padx=10)
@@ -1011,7 +1186,7 @@ class BedrockUpdaterApp:
         self.compress_var = tk.BooleanVar(value=self.config.get("compress_backups", False))
         ttk.Checkbutton(backup_frame, text="Compress backups (ZIP format, slower but smaller)", variable=self.compress_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
         update_frame = ttk.LabelFrame(self.settings_tab, text="Update Settings", padding=10)
-        update_frame.grid(row=1, column=0, sticky="ew", pady=5)
+        update_frame.grid(row=2, column=0, sticky="ew", pady=5)
         self.auto_stop_var = tk.BooleanVar(value=self.config.get("auto_stop_server_before_update", True))
         ttk.Checkbutton(update_frame, text="Automatically stop server before update", variable=self.auto_stop_var).grid(row=0, column=0, sticky="w", pady=5)
         self.auto_start_var = tk.BooleanVar(value=self.config.get("auto_start_server_after_update", False))
@@ -1019,19 +1194,21 @@ class BedrockUpdaterApp:
         self.check_updates_var = tk.BooleanVar(value=self.config.get("check_updates_on_start", True))
         ttk.Checkbutton(update_frame, text="Check for server updates on application start", variable=self.check_updates_var).grid(row=2, column=0, sticky="w", pady=5)
         ui_frame = ttk.LabelFrame(self.settings_tab, text="Interface Settings", padding=10)
-        ui_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        ui_frame.grid(row=3, column=0, sticky="ew", pady=5)
         ttk.Label(ui_frame, text="Console font size:").grid(row=0, column=0, sticky="w", pady=5)
         self.font_size_var = tk.IntVar(value=self.config.get("console_font_size", 9))
         ttk.Spinbox(ui_frame, from_=6, to=24, width=10, textvariable=self.font_size_var).grid(row=0, column=1, sticky="w", padx=10)
         self.notifications_var = tk.BooleanVar(value=self.config.get("show_notifications", True))
         ttk.Checkbutton(ui_frame, text="Show notification messages", variable=self.notifications_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+        self.dark_mode_var = tk.BooleanVar(value=self.config.get("dark_mode", False))
+        ttk.Checkbutton(ui_frame, text="🌙 Dark mode", variable=self.dark_mode_var, command=self.toggle_dark_mode).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
         btn_frame = ttk.Frame(self.settings_tab)
-        btn_frame.grid(row=3, column=0, sticky="ew", pady=20)
+        btn_frame.grid(row=4, column=0, sticky="ew", pady=20)
         ttk.Button(btn_frame, text="💾 Save Settings", command=self.save_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="🔄 Reset to Defaults", command=self.reset_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="📂 Open Config File", command=self.open_config_file).pack(side=tk.RIGHT, padx=5)
         about_frame = ttk.LabelFrame(self.settings_tab, text="About", padding=10)
-        about_frame.grid(row=4, column=0, sticky="ew", pady=5)
+        about_frame.grid(row=5, column=0, sticky="ew", pady=5)
         ttk.Label(about_frame, text=f"{APP_NAME} v{APP_VERSION}").pack(anchor="w")
         ttk.Label(about_frame, text=APP_AUTHOR, foreground="gray").pack(anchor="w")
         ttk.Label(about_frame, text="A comprehensive tool for managing Minecraft Bedrock Dedicated Servers.", foreground="gray").pack(anchor="w", pady=(5, 0))
@@ -1125,6 +1302,8 @@ class BedrockUpdaterApp:
             self.backup_manager = BackupManager(server_path, self.config)
             self.refresh_backups()
             self.refresh_worlds()
+            self.refresh_world_combo()
+            self.refresh_backup_header()
             self.update_network_info()
     
     def update_server_status(self, status: str):
@@ -1133,11 +1312,15 @@ class BedrockUpdaterApp:
             self.server_status_label.config(text="⬤ Server: Running", foreground="green")
             self.start_btn.config(state=tk.DISABLED)
             self.stop_btn.config(state=tk.NORMAL)
+            if hasattr(self, 'world_combo'):
+                self.world_combo.config(state=tk.DISABLED)
         else:
             self.server_running_label.config(text="⬤ Stopped", foreground="red")
             self.server_status_label.config(text="⬤ Server: Stopped", foreground="red")
             self.start_btn.config(state=tk.NORMAL)
             self.stop_btn.config(state=tk.DISABLED)
+            if hasattr(self, 'world_combo'):
+                self.world_combo.config(state="readonly")
     
     def update_network_info(self):
         server_path = self.server_entry.get()
@@ -1229,16 +1412,37 @@ class BedrockUpdaterApp:
             self.properties_editor.load_properties()
     
     def update_server_info(self):
-        server_path = Path(self.server_entry.get())
+        server_path_str = self.server_entry.get()
+        if not server_path_str or not Path(server_path_str).exists():
+            self.info_text.config(text="No Server selected — set the Server Folder in ⚙️ Settings.")
+            return
+        server_path = Path(server_path_str)
         props = self.parse_server_properties(server_path)
         worlds = get_world_info(server_path)
+        installed = detect_server_version(server_path)
+        active = props.get("level-name", "Bedrock Level")
+        world_versions = {w["name"]: w["version"] for w in worlds}
+        world_line = f"Active World: {active}"
+        if active not in world_versions:
+            world_line += " (not generated yet — created on first start)"
+        elif world_versions[active] != "Unknown":
+            world_line += f" — last run on {world_versions[active]} (won't load on older versions)"
+            iv, wv = parse_version_tuple(installed), parse_version_tuple(world_versions[active])
+            if iv and wv and wv > iv:
+                world_line += "  ⚠ NEWER than installed Bedrock Server Version!"
         info_lines = [
             f"Server Name: {props.get('server-name', 'Unknown')}",
+            f"Bedrock Server Version: {installed}",
+            world_line,
             f"Game Mode: {props.get('gamemode', 'Unknown')} | Difficulty: {props.get('difficulty', 'Unknown')}",
             f"Max Players: {props.get('max-players', 'Unknown')} | Port: {props.get('server-port', '19132')}",
             f"Worlds: {len(worlds)} | Total size: {format_size(get_folder_size(server_path / 'worlds'))}",
         ]
         self.info_text.config(text="\n".join(info_lines))
+        self.refresh_world_combo()
+        self.refresh_backup_header()
+        if hasattr(self, 'update_installed_label'):
+            self.update_installed_label.config(text=f"Installed Bedrock Server Version: {installed}")
     
     def get_preserve_list(self) -> List[str]:
         return [item for item, var in self.preserve_vars.items() if var.get()]
@@ -1354,6 +1558,9 @@ class BedrockUpdaterApp:
             self.log(f"PROCESS COMPLETED in {format_duration(elapsed)}", "success")
             self.log("=" * 50, "info")
             msg = "Server installed successfully!" if is_fresh else "Server updated successfully!"
+            if is_fresh:
+                msg += ("\n\nNext step: create your World in the 🌍 Worlds tab,\n"
+                        "then review 📝 Active Server Configuration before the first start.")
             self.root.after(0, lambda: messagebox.showinfo("Success", f"{msg}\n\nTime: {format_duration(elapsed)}"))
             self.root.after(0, self.validate_inputs)
             self.root.after(0, self.refresh_backups)
@@ -1447,6 +1654,19 @@ class BedrockUpdaterApp:
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Backup failed:\n{str(e)}"))
         threading.Thread(target=do_backup, daemon=True).start()
     
+    def refresh_backup_header(self):
+        """Name the Server these backups belong to, so it's clear what gets backed up."""
+        if not hasattr(self, 'backup_header_label'):
+            return
+        server_path = self.server_entry.get()
+        if server_path and Path(server_path).exists():
+            props = self.parse_server_properties(Path(server_path))
+            name = props.get("server-name", Path(server_path).name)
+            self.backup_header_label.config(
+                text=f"Backups for: {name}  —  stored in {Path(server_path).parent / 'bedrock_backups'}")
+        else:
+            self.backup_header_label.config(text="Backups for: (no Server selected)")
+
     def refresh_backups(self):
         if not self.backup_manager:
             return
@@ -1523,7 +1743,7 @@ class BedrockUpdaterApp:
         for item in self.world_tree.get_children():
             self.world_tree.delete(item)
         for world in get_world_info(Path(self.server_entry.get())):
-            self.world_tree.insert("", tk.END, values=(world["name"], world["size"], world["last_modified"]))
+            self.world_tree.insert("", tk.END, values=(world["name"], world["size"], world["last_modified"], world["version"]))
     
     def on_world_select(self, event):
         selected = self.world_tree.selection()
@@ -1688,7 +1908,7 @@ class ServerPropertiesEditor(ttk.Frame):
     def setup_ui(self):
         header = ttk.Frame(self)
         header.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(header, text="Server Configuration", font=("TkDefaultFont", 12, "bold")).pack(side=tk.LEFT)
+        ttk.Label(header, text="Active Server Configuration", font=("TkDefaultFont", 12, "bold")).pack(side=tk.LEFT)
         btn_frame = ttk.Frame(header)
         btn_frame.pack(side=tk.RIGHT)
         ttk.Button(btn_frame, text="🔄 Reload", command=self.load_properties).pack(side=tk.LEFT, padx=2)

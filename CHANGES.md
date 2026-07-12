@@ -4,6 +4,36 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [1.0.3] — 2026-07-12
+
+GUI restructured around a clear model: a **Server** (one install, one port) holds **Worlds**;
+one World is **Active**; the **Bedrock Server Version** is what Update swaps.
+Full layout rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md).
+
+### Added
+- **Active World dropdown** on the Server tab — switch Worlds safely (existing folders only,
+  disabled while running; takes effect on next start). Kills the old free-text typo trap.
+- **Create New World** flow on the Worlds tab, plus **rename** and **delete** (both refuse the
+  Active World / a running Server).
+- **Per-World "Last Run On" version** — read from each World's `level.dat`
+  (`lastOpenedWithVersion` NBT tag), shown in the Worlds list and in Active Server Information
+  with a *"won't load on older versions"* note and a ⚠ when a World is newer than the
+  installed Bedrock Server Version.
+- **Backups header** names the Server the backups belong to and where they're stored.
+
+### Changed
+- **Tab order:** Server (home) → Worlds → Active Server Configuration → Backups → Update → Settings.
+- **Server Information** moved from Update to the Server tab (now *Active Server Information*);
+  console height halved to make room.
+- **"What to back up" checklist** (the preserve list) moved from Update to Backups — it's the
+  same list updates preserve.
+- **Server Folder picker** moved from Update to Settings ("Server Location") — one-time setup.
+- **Properties tab** renamed **Active Server Configuration**.
+- Update tab slimmed to the version tools; shows the installed Bedrock Server Version;
+  dark-mode toggle moved to Settings; fresh installs now point new users to the Worlds tab.
+
+---
+
 ## [1.0.2] — 2026-06-14
 
 ### Added

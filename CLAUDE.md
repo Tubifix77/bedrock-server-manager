@@ -6,11 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-file Python/tkinter desktop GUI for managing Minecraft Bedrock Dedicated Servers
 (update, backup/restore, run/console, world & `server.properties` editing). Despite the
-`_linux` filename and `1.0.2` version string, the code is genuinely cross-platform —
-every OS-specific operation branches on `sys.platform == "win32"`.
+`_linux` filename, the code is genuinely cross-platform — every OS-specific operation
+branches on `sys.platform == "win32"`.
 
-All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py) (~1700 lines).
-The other files are a desktop launcher, docs, and license.
+All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py) (~2000 lines).
+The other files are a desktop launcher, packaging scripts, docs, and license.
+
+**Terminology (used in the GUI and all discussions — see [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md)):**
+a **Server** is one configured install (name + port + config) that holds **Worlds**; exactly one
+World is **Active** (`level-name`); the **Bedrock Server Version** is the engine build that
+Update swaps. Don't say "server" for the engine files.
 
 ## Running
 
@@ -40,10 +45,17 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   **observer/callback pattern**: register `output_callbacks` / `status_callbacks`; a daemon
   thread reads stdout and fans lines out to callbacks. Commands are sent via stdin
   (`send_command`), graceful stop sends the `stop` command then falls back to kill.
-- **`BedrockUpdaterApp`** — the main window. Builds a 6-tab `ttk.Notebook`
-  (Update / Server / Backups / Worlds / Properties / Settings) and holds all UI handlers.
+- **`BedrockUpdaterApp`** — the main window. Builds a 6-tab `ttk.Notebook` in this order:
+  **Server** (home: Active Server Information, Active World dropdown, start/stop, console) /
+  **Worlds** (create, rename, delete, per-World last-run version) /
+  **Active Server Configuration** (the properties editor) / **Backups** (preserve checklist +
+  backup list, header names the Server) / **Update** (Bedrock Server Version tools) /
+  **Settings** (app prefs + the Server Folder picker, `self.server_entry`).
 - **`ServerPropertiesEditor`** — a `ttk.Frame` subclass that renders `server.properties` as
-  editable key/value rows (skips `level-name`, which the Worlds tab owns).
+  editable key/value rows (skips `level-name`, owned by the Active World dropdown on Server).
+- **World versions** — `get_world_last_opened_version()` reads the `lastOpenedWithVersion`
+  NBT tag straight out of a world's binary `level.dat` (little-endian byte scan, no NBT lib);
+  a World won't load on a Bedrock Server Version older than that stamp.
 
 ### Two patterns that govern almost every change
 
@@ -55,9 +67,10 @@ The file is divided by `# ===` banner comments into these sections, top to botto
 2. **The update pipeline is destructive.** `perform_update()` does:
    backup preserved items → **delete the entire server folder contents** → extract the new ZIP →
    restore preserved items from the just-made backup → optionally trim old backups. The
-   "preserve list" (checkboxes on the Update tab, defaults from `DEFAULT_PRESERVE_ITEMS`) is the
-   only thing standing between an update and total data loss — `worlds` is flagged `critical`.
-   A "fresh install" (no existing `server.properties`) skips the backup and wipe steps.
+   "preserve list" (the *What to back up* checkboxes on the **Backups** tab, defaults from
+   `DEFAULT_PRESERVE_ITEMS`) is the only thing standing between an update and total data loss —
+   `worlds` is flagged `critical`. A "fresh install" (no existing `server.properties`) skips
+   the backup and wipe steps.
 
 ### Cross-platform touch points
 

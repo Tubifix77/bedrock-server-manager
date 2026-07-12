@@ -2,7 +2,7 @@
 
 A comprehensive cross-platform GUI application for managing Minecraft Bedrock Dedicated Servers.
 
-![Version](https://img.shields.io/badge/version-1.0.2-blue)
+![Version](https://img.shields.io/badge/version-1.0.3-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -24,11 +24,11 @@ Prefer to run from source? See **Quick Start** below. Build/release details are 
 
 ## ✨ Features
 
-- **Start/Stop/Restart** server with one click, live console output
+- **Server home tab** — Active Server Information at a glance, Start/Stop/Restart, live console
+- **Multi-world management** — create, switch (dropdown), rename and delete Worlds; shows each World's *last run on* version so you know what it needs
 - **Safe updates** — automatic backup before every update, selective file preservation
-- **Backup management** — create, restore, auto-cleanup, optional compression
-- **World browser** — view worlds, switch active world, see sizes and dates
-- **Server properties editor** — edit `server.properties` in GUI
+- **Backup management** — per-Server backups: create, restore, auto-cleanup, optional compression
+- **Server configuration editor** — edit `server.properties` in the GUI
 - **Cross-platform** — Windows and Linux
 
 ---
