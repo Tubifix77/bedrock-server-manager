@@ -786,6 +786,10 @@ class BedrockUpdaterApp:
         self.settings_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.settings_tab, text="⚙️ Settings")
         self.setup_settings_tab()
+
+        # Auto-refresh dynamic tabs when they're opened, so lists never go stale
+        # (bound after construction, so startup tab-selection can't fire it early).
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
         
         self.status_bar = ttk.Frame(self.root)
         self.status_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=2)
@@ -1334,6 +1338,23 @@ class BedrockUpdaterApp:
             self.initialize_managers()
         self.validate_inputs()
     
+    def on_tab_changed(self, event=None):
+        """Refresh the data behind a tab whenever the user opens it.
+
+        Deliberately does NOT reload Active Server Configuration (it would
+        discard unsaved edits) or Backups (sizing every backup is slow).
+        """
+        if not hasattr(self, 'server_entry'):
+            return
+        try:
+            current = self.notebook.nametowidget(self.notebook.select())
+        except Exception:
+            return
+        if current is self.worlds_tab:
+            self.refresh_worlds()
+        elif current is self.server_tab:
+            self.update_server_info()
+
     def initialize_managers(self):
         server_path = Path(self.server_entry.get())
         if server_path.exists():

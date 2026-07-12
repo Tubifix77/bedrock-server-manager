@@ -55,6 +55,11 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
   a click may restart the Server only when the user has just said yes to exactly that.
   Corollary: prefer state-driven hints that appear only when relevant over permanent
   helper sentences.
+- **Tabs self-refresh on open** (user feedback, July 2026): dynamic views (Worlds list,
+  Active Server Information) re-scan when their tab is selected — the user should never need
+  a Refresh button to see reality. Exceptions: Active Server Configuration never auto-reloads
+  (unsaved edits must survive tab hopping) and Backups stays manual (sizing every backup
+  walks thousands of files).
 - **server-name is not the World name — and no hard tie**: `server-name` is what players see
   in their in-game server list; the Active World is which save is loaded. Tying them would
   re-conflate what this design separates. Instead: a gray hint next to `server-name` in the

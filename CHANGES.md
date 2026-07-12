@@ -23,6 +23,10 @@ Full layout rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md).
   confirmation it stops the Server nicely, switches, and starts it again on the new World.
 - `server-name` in Active Server Configuration now carries a hint: *(the name players see in
   their server list)*.
+- **Tabs auto-refresh when opened** — the Worlds list and the Server tab's info panel re-scan
+  on every visit, so a freshly generated World replaces its pending row without pressing
+  Refresh. (Active Server Configuration deliberately doesn't auto-reload — unsaved edits
+  survive tab hopping.)
 - **Per-World "Last Run On" version** — read from each World's `level.dat`
   (`lastOpenedWithVersion` NBT tag), shown in the Worlds list and in Active Server Information
   with a *"won't load on older versions"* note and a ⚠ when a World is newer than the
