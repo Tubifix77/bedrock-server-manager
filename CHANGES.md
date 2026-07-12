@@ -40,7 +40,8 @@ Full layout rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md).
 - **"What to back up" checklist** (the preserve list) moved from Update to Backups — it's the
   same list updates preserve.
 - **Server Folder picker** moved from Update to Settings ("Server Location") — one-time setup.
-- **Properties tab** renamed **Active Server Configuration**.
+- **Properties tab** renamed: the tab reads **Configuration**; the page header carries the
+  full **Active Server Configuration**.
 - Update tab slimmed to the version tools; shows the installed Bedrock Server Version;
   dark-mode toggle moved to Settings; fresh installs now point new users to the Worlds tab.
 

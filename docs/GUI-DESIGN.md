@@ -27,7 +27,7 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
 |---|-----|------|-------|
 | 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **Active World dropdown** (existing Worlds only; greys out while running with an inline "Not available until the running Server is stopped" hint — no static helper text while stopped) · network info · console (half height) |
 | 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — where new users land after a fresh install; ends by jumping to Active Server Configuration) · Worlds list with sizes, dates, **Last Run On** — a created-but-not-yet-generated Active World shows as an orange *"created on next start"* pending row · **Set as Active World** (if the Server runs: confirm → stop nicely → switch → start again) · Rename / Delete (refuse a running Server; Delete refuses the Active World) |
-| 3 | **📝 Active Server Configuration** | Edit the Server | `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (seed, gamemode…). |
+| 3 | **📝 Configuration** | Edit the Server | Page header: **Active Server Configuration**. `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (seed, gamemode…). |
 | 4 | **💾 Backups** | Per-Server backups | Header **names the Server** and where backups live · **What to back up** checklist (the preserve list — same list updates preserve) · backup list (~⅓ height) · restore/delete |
 | 5 | **🔄 Update** | Swap the Bedrock Server Version | Installed version · ZIP picker · steps **1: Wiki Version → 2: Download Latest → 3: Update Server** · Dry Run / Open Folder (small, right) · activity log |
 | 6 | **⚙️ Settings** | App-level | **Server Location** (the Server Folder — one-time setup) · backup/update/interface prefs · dark mode |
@@ -42,8 +42,9 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
   can't silently create an empty world. Creating (which legitimately needs free text) is an
   explicit, separate flow on Worlds.
 - **"Active Server ___" prefix pairs the two panels**: *Active Server Information* (read) on
-  Server, *Active Server Configuration* (edit) as its own tab. "Active" refers to Worlds only
-  otherwise.
+  Server, *Active Server Configuration* (edit) as the config page's header. The tab itself is
+  just **Configuration** to keep the tab bar compact (user feedback, July 2026) — the full
+  paired name greets you on the page. "Active" refers to Worlds only otherwise.
 - **The preserve list lives with Backups** because "what a backup contains" and "what an
   update preserves" are the same list — Update reads it from there.
 - **"Worlds", not "New"**: in a *server manager*, a tab called "New" reads as "new Server" —

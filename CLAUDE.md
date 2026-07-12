@@ -48,7 +48,8 @@ The file is divided by `# ===` banner comments into these sections, top to botto
 - **`BedrockUpdaterApp`** — the main window. Builds a 6-tab `ttk.Notebook` in this order:
   **Server** (home: Active Server Information, Active World dropdown, start/stop, console) /
   **Worlds** (create, rename, delete, per-World last-run version) /
-  **Active Server Configuration** (the properties editor) / **Backups** (preserve checklist +
+  **Configuration** (the properties editor; page header "Active Server Configuration") /
+  **Backups** (preserve checklist +
   backup list, header names the Server) / **Update** (Bedrock Server Version tools) /
   **Settings** (app prefs + the Server Folder picker, `self.server_entry`).
 - **`ServerPropertiesEditor`** — a `ttk.Frame` subclass that renders `server.properties` as

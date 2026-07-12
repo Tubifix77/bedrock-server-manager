@@ -773,7 +773,7 @@ class BedrockUpdaterApp:
         self.setup_worlds_tab()
 
         self.properties_editor = ServerPropertiesEditor(self.notebook, self)
-        self.notebook.add(self.properties_editor, text="📝 Active Server Configuration")
+        self.notebook.add(self.properties_editor, text="📝 Configuration")
 
         self.backup_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.backup_tab, text="💾 Backups")
@@ -1134,7 +1134,7 @@ class BedrockUpdaterApp:
                 messagebox.showinfo("World Created",
                     f"'{name}' is now the Active World.\n\n"
                     "Bedrock will generate it the first time you start the Server.\n"
-                    "Taking you to 📝 Active Server Configuration — seed, gamemode and\n"
+                    "Taking you to 📝 Configuration — seed, gamemode and\n"
                     "difficulty shape the new World on its first start.")
                 self.notebook.select(self.properties_editor)
                 self.properties_editor.load_properties()
@@ -1624,7 +1624,7 @@ class BedrockUpdaterApp:
             msg = "Server installed successfully!" if is_fresh else "Server updated successfully!"
             if is_fresh:
                 msg += ("\n\nNext step: create your World in the 🌍 Worlds tab,\n"
-                        "then review 📝 Active Server Configuration before the first start.")
+                        "then review 📝 Configuration before the first start.")
             self.root.after(0, lambda: messagebox.showinfo("Success", f"{msg}\n\nTime: {format_duration(elapsed)}"))
             self.root.after(0, self.validate_inputs)
             self.root.after(0, self.refresh_backups)
