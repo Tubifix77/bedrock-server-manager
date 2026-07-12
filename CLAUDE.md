@@ -73,6 +73,12 @@ The file is divided by `# ===` banner comments into these sections, top to botto
    `worlds` is flagged `critical`. A "fresh install" (no existing `server.properties`) skips
    the backup and wipe steps.
 
+For **GUI/UX changes**, follow [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md) — it's the source of
+truth for tab roles, terminology, and the conventions the app now holds to: *confirmed-only*
+Server side-effects (a click may stop/start the Server only right after a yes/no dialog — the
+Active World dropdown greys out instead), dynamic tabs self-refreshing on open, and marking the
+Active World (✅). Every setting saved to config also needs its default in `DEFAULT_SETTINGS`.
+
 ### Cross-platform touch points
 
 When changing OS-specific behavior, these are the spots that branch on `win32` and usually need

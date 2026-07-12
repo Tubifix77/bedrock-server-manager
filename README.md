@@ -64,6 +64,7 @@ To install the desktop launcher on Linux, copy `bedrock-server-manager.desktop` 
 | `bedrock_updater_linux.py` | Main application |
 | `bedrock-server-manager.desktop` | Linux desktop launcher |
 | `packaging/` | Build scripts for the Windows installer & Linux AppImage |
+| `docs/GUI-DESIGN.md` | GUI layout & terminology reference |
 | `CHANGES.md` | Changelog |
 
 ---

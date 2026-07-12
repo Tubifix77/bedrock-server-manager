@@ -4,7 +4,7 @@ All notable changes to this project will be documented here.
 
 ---
 
-## [1.0.3] — 2026-07-12
+## [1.0.3] — 2026-07-13
 
 GUI restructured around a clear model: a **Server** (one install, one port) holds **Worlds**;
 one World is **Active**; the **Bedrock Server Version** is what Update swaps.
