@@ -23,6 +23,10 @@ Full layout rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md).
   confirmation it stops the Server nicely, switches, and starts it again on the new World.
 - `server-name` in Active Server Configuration now carries a hint: *(the name players see in
   their server list)*.
+- **Update stops the Server nicely, in the background** — the graceful stop now runs inside
+  the update worker thread (the UI used to freeze for up to 30 s), and the confirmation
+  dialog now says the running Server will be stopped first (and restarted afterwards, when
+  that setting is enabled).
 - **Tabs auto-refresh when opened** — the Worlds list and the Server tab's info panel re-scan
   on every visit, so a freshly generated World replaces its pending row without pressing
   Refresh. (Active Server Configuration deliberately doesn't auto-reload — unsaved edits

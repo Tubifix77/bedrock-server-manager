@@ -1546,16 +1546,21 @@ class BedrockUpdaterApp:
         if "worlds" not in preserve:
             if not messagebox.askyesno("Warning", "You haven't selected 'worlds'! Your world data will be DELETED. Continue?"):
                 return
-        if not messagebox.askyesno("Confirm", f"Update server?\n\nItems to preserve: {len(preserve)}\nBackup will be created first."):
+        running = bool(self.server_manager and self.server_manager.is_running())
+        if running and not self.config.get("auto_stop_server_before_update", True):
+            if not messagebox.askyesno("Server Running",
+                    "The Server is running. Stop it nicely and continue with the update?"):
+                return
+        running_note = ""
+        if running:
+            running_note = "\nThe running Server will be stopped nicely first."
+            if self.config.get("auto_start_server_after_update", False):
+                running_note += "\nIt will be started again afterwards."
+        if not messagebox.askyesno("Confirm",
+                f"Update server?\n{running_note}\nItems to preserve: {len(preserve)}\nBackup will be created first."):
             return
-        if self.server_manager and self.server_manager.is_running():
-            if self.config.get("auto_stop_server_before_update", True):
-                self.log("Stopping server before update...", "info")
-                self.server_manager.stop()
-            else:
-                if not messagebox.askyesno("Server Running", "Server is running. Stop it to continue?"):
-                    return
-                self.server_manager.stop()
+        # The actual stop happens inside perform_update's worker thread,
+        # so the UI never freezes while the Server shuts down.
         self.is_updating = True
         self.update_button.config(state=tk.DISABLED)
         threading.Thread(target=self.perform_update, daemon=True).start()
@@ -1570,6 +1575,11 @@ class BedrockUpdaterApp:
             self.log("=" * 50, "info")
             self.log("STARTING FRESH INSTALL" if is_fresh else "STARTING SERVER UPDATE", "info")
             self.log("=" * 50, "info")
+            if self.server_manager and self.server_manager.is_running():
+                self.set_progress(5, "Stopping Server...")
+                self.log("Stopping the running Server nicely before the update...", "info")
+                self.server_manager.stop()
+                self.log("Server stopped.", "success")
             backup_path = "N/A"
             backed_up = []
             if not is_fresh:

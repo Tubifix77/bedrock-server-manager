@@ -54,6 +54,9 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
   stop it for you. The one exception is the explicit **Set as Active World** button, which
   *may* stop → switch → start again, but only after a confirmation dialog. Rule of thumb:
   a click may restart the Server only when the user has just said yes to exactly that.
+  Update follows the same rule: its confirmation states the running Server will be stopped
+  nicely first (and restarted after, if that setting is on), and the stop runs in the
+  update's worker thread so the UI never freezes.
   Corollary: prefer state-driven hints that appear only when relevant over permanent
   helper sentences.
 - **Tabs self-refresh on open** (user feedback, July 2026): dynamic views (Worlds list,
