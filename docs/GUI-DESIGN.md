@@ -25,7 +25,7 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
 
 | # | Tab | Role | Holds |
 |---|-----|------|-------|
-| 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **Active World dropdown** (existing Worlds only, disabled while running) · network info · console (half height) |
+| 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **Active World dropdown** (existing Worlds only; greys out while running with an inline "Not available until the running Server is stopped" hint — no static helper text while stopped) · network info · console (half height) |
 | 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — where new users land after a fresh install) · Worlds list with sizes, dates, **Last Run On** · Set Active / Rename / Delete (all refuse a running Server; Delete refuses the Active World) |
 | 3 | **📝 Active Server Configuration** | Edit the Server | `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (seed, gamemode…). |
 | 4 | **💾 Backups** | Per-Server backups | Header **names the Server** and where backups live · **What to back up** checklist (the preserve list — same list updates preserve) · backup list (~⅓ height) · restore/delete |
@@ -48,3 +48,7 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
   update preserves" are the same list — Update reads it from there.
 - **"Worlds", not "New"**: in a *server manager*, a tab called "New" reads as "new Server" —
   which is a different (future) feature.
+- **No auto-stop side effects** (user decision, July 2026): World actions never stop a running
+  Server for you — controls grey out with an inline reason instead. Stopping is always an
+  explicit click. Corollary: prefer state-driven hints that appear only when relevant over
+  permanent helper sentences.

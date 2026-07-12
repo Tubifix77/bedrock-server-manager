@@ -11,8 +11,9 @@ one World is **Active**; the **Bedrock Server Version** is what Update swaps.
 Full layout rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md).
 
 ### Added
-- **Active World dropdown** on the Server tab — switch Worlds safely (existing folders only,
-  disabled while running; takes effect on next start). Kills the old free-text typo trap.
+- **Active World dropdown** on the Server tab — switch Worlds safely (existing folders only).
+  Greys out while the Server runs, with an inline *"Not available until the running Server is
+  stopped"* hint that disappears when stopped. Kills the old free-text typo trap.
 - **Create New World** flow on the Worlds tab, plus **rename** and **delete** (both refuse the
   Active World / a running Server).
 - **Per-World "Last Run On" version** — read from each World's `level.dat`

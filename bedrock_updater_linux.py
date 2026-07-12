@@ -887,8 +887,9 @@ class BedrockUpdaterApp:
         self.world_combo = ttk.Combobox(world_frame, state="readonly", width=32)
         self.world_combo.pack(side=tk.LEFT, padx=8)
         self.world_combo.bind("<<ComboboxSelected>>", self.on_world_selected)
-        ttk.Label(world_frame, text="(switch while stopped — takes effect on next start)",
-                  font=("TkDefaultFont", 8), foreground="gray").pack(side=tk.LEFT)
+        # Empty while stopped; explains the greyed-out dropdown while the Server runs.
+        self.world_hint_label = ttk.Label(world_frame, text="", font=("TkDefaultFont", 8), foreground="#FF9800")
+        self.world_hint_label.pack(side=tk.LEFT)
         net_frame = ttk.Frame(control_frame)
         net_frame.pack(fill=tk.X, pady=(10, 0))
         self.network_label = ttk.Label(net_frame, text="Network: Not configured")
@@ -1314,6 +1315,7 @@ class BedrockUpdaterApp:
             self.stop_btn.config(state=tk.NORMAL)
             if hasattr(self, 'world_combo'):
                 self.world_combo.config(state=tk.DISABLED)
+                self.world_hint_label.config(text="Not available until the running Server is stopped")
         else:
             self.server_running_label.config(text="⬤ Stopped", foreground="red")
             self.server_status_label.config(text="⬤ Server: Stopped", foreground="red")
@@ -1321,6 +1323,7 @@ class BedrockUpdaterApp:
             self.stop_btn.config(state=tk.DISABLED)
             if hasattr(self, 'world_combo'):
                 self.world_combo.config(state="readonly")
+                self.world_hint_label.config(text="")
     
     def update_network_info(self):
         server_path = self.server_entry.get()
