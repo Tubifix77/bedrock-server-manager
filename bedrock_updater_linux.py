@@ -22,6 +22,7 @@ import urllib.error
 from datetime import datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import font as tkfont
 from pathlib import Path
 import logging
 from typing import Optional, Dict, List, Tuple
@@ -1035,10 +1036,10 @@ class BedrockUpdaterApp:
         current = props.get("level-name", "")
         if current and current not in worlds:
             worlds = worlds + [current]  # created but not generated yet
-        # Label the active one in the dropdown, but keep the raw name as the stored value.
-        self._world_combo_map = {(f"{w}   ✅ (active)" if w == current else w): w for w in worlds}
-        self.world_combo.config(values=list(self._world_combo_map.keys()))
-        self.world_combo.set(f"{current}   ✅ (active)" if current in worlds else current)
+        # Plain world names; the dropdown's selected value IS the active one
+        # (the "Active World:" label already says what it is).
+        self.world_combo.config(values=worlds)
+        self.world_combo.set(current)
 
     def set_active_world(self, new_name: str) -> bool:
         """Point level-name at a world folder; takes effect on next Server start."""
@@ -1058,8 +1059,7 @@ class BedrockUpdaterApp:
         return False
 
     def on_world_selected(self, event=None):
-        picked = self.world_combo.get()
-        new_name = getattr(self, '_world_combo_map', {}).get(picked, picked)
+        new_name = self.world_combo.get()
         if not new_name:
             return
         if self.server_manager and self.server_manager.is_running():
@@ -1843,7 +1843,11 @@ class BedrockUpdaterApp:
                                    values=(active, "—", "created on next start", "⏳ configure, then Start"),
                                    tags=("pending", "active"))
         self.world_tree.tag_configure("pending", foreground="#FF9800")
-        self.world_tree.tag_configure("active", font=("TkDefaultFont", 9, "bold"))
+        # Bold WITHOUT setting a size/family, so the row keeps the same font as the others.
+        base = tkfont.nametofont("TkDefaultFont")
+        self._active_bold = tkfont.Font(font=base)
+        self._active_bold.configure(weight="bold")
+        self.world_tree.tag_configure("active", font=self._active_bold)
     
     def on_world_select(self, event):
         selected = self.world_tree.selection()
