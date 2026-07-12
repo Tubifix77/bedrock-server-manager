@@ -15,7 +15,14 @@ Full layout rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md).
   Greys out while the Server runs, with an inline *"Not available until the running Server is
   stopped"* hint that disappears when stopped. Kills the old free-text typo trap.
 - **Create New World** flow on the Worlds tab, plus **rename** and **delete** (both refuse the
-  Active World / a running Server).
+  Active World / a running Server). A new World appears immediately as an orange pending row
+  (*"created on next start — configure, then Start"*), the app offers to name the Server after
+  it while the stock "Dedicated Server" name is unchanged, and then jumps straight to
+  Active Server Configuration.
+- **Set as Active World** on the Worlds tab can switch while the Server runs: after a
+  confirmation it stops the Server nicely, switches, and starts it again on the new World.
+- `server-name` in Active Server Configuration now carries a hint: *(the name players see in
+  their server list)*.
 - **Per-World "Last Run On" version** — read from each World's `level.dat`
   (`lastOpenedWithVersion` NBT tag), shown in the Worlds list and in Active Server Information
   with a *"won't load on older versions"* note and a ⚠ when a World is newer than the

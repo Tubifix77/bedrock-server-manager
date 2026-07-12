@@ -26,7 +26,7 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
 | # | Tab | Role | Holds |
 |---|-----|------|-------|
 | 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **Active World dropdown** (existing Worlds only; greys out while running with an inline "Not available until the running Server is stopped" hint — no static helper text while stopped) · network info · console (half height) |
-| 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — where new users land after a fresh install) · Worlds list with sizes, dates, **Last Run On** · Set Active / Rename / Delete (all refuse a running Server; Delete refuses the Active World) |
+| 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — where new users land after a fresh install; ends by jumping to Active Server Configuration) · Worlds list with sizes, dates, **Last Run On** — a created-but-not-yet-generated Active World shows as an orange *"created on next start"* pending row · **Set as Active World** (if the Server runs: confirm → stop nicely → switch → start again) · Rename / Delete (refuse a running Server; Delete refuses the Active World) |
 | 3 | **📝 Active Server Configuration** | Edit the Server | `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (seed, gamemode…). |
 | 4 | **💾 Backups** | Per-Server backups | Header **names the Server** and where backups live · **What to back up** checklist (the preserve list — same list updates preserve) · backup list (~⅓ height) · restore/delete |
 | 5 | **🔄 Update** | Swap the Bedrock Server Version | Installed version · ZIP picker · steps **1: Wiki Version → 2: Download Latest → 3: Update Server** · Dry Run / Open Folder (small, right) · activity log |
@@ -48,7 +48,15 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
   update preserves" are the same list — Update reads it from there.
 - **"Worlds", not "New"**: in a *server manager*, a tab called "New" reads as "new Server" —
   which is a different (future) feature.
-- **No auto-stop side effects** (user decision, July 2026): World actions never stop a running
-  Server for you — controls grey out with an inline reason instead. Stopping is always an
-  explicit click. Corollary: prefer state-driven hints that appear only when relevant over
-  permanent helper sentences.
+- **No *silent* auto-stop side effects** (user decisions, July 2026): ambient controls (the
+  Active World dropdown) grey out with an inline reason while the Server runs — they never
+  stop it for you. The one exception is the explicit **Set as Active World** button, which
+  *may* stop → switch → start again, but only after a confirmation dialog. Rule of thumb:
+  a click may restart the Server only when the user has just said yes to exactly that.
+  Corollary: prefer state-driven hints that appear only when relevant over permanent
+  helper sentences.
+- **server-name is not the World name — and no hard tie**: `server-name` is what players see
+  in their in-game server list; the Active World is which save is loaded. Tying them would
+  re-conflate what this design separates. Instead: a gray hint next to `server-name` in the
+  editor, and when creating a World while the Server still has the stock name
+  ("Dedicated Server"), a one-time offer to name the Server after the new World.

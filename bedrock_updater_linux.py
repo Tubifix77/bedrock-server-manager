@@ -1065,11 +1065,33 @@ class BedrockUpdaterApp:
             messagebox.showwarning("Warning", "No World selected.")
             return
         name = str(self.world_tree.item(selected[0])["values"][0])
-        if self.server_manager and self.server_manager.is_running():
-            messagebox.showwarning("Server Running", "Stop the Server before switching the Active World.")
+        server_path = self.server_entry.get()
+        if not server_path:
             return
+        props = self.parse_server_properties(Path(server_path) / "server.properties")
+        if name == props.get("level-name"):
+            self.log(f"'{name}' is already the Active World", "info")
+            return
+        if self.server_manager and self.server_manager.is_running():
+            # Explicit switch action: confirm, then stop nicely -> switch -> start again.
+            if not messagebox.askyesno("Switch World",
+                    f"The Server is running.\n\nStop it nicely, switch to '{name}', and start it again?"):
+                return
+            self.log(f"Switching to '{name}': stopping the running Server...", "info")
+            def do_switch():
+                self.server_manager.stop()
+                self.root.after(0, lambda: self._finish_world_switch(name))
+            threading.Thread(target=do_switch, daemon=True).start()
+        else:
+            if self.set_active_world(name):
+                self.refresh_world_combo()
+
+    def _finish_world_switch(self, name: str):
+        """Runs on the UI thread after the Server stopped: switch world, start again."""
         if self.set_active_world(name):
             self.refresh_world_combo()
+            self.log(f"Starting the Server on '{name}'...", "info")
+            self.start_server()
 
     def create_new_world(self):
         server_path = self.server_entry.get()
@@ -1094,11 +1116,24 @@ class BedrockUpdaterApp:
             self.refresh_world_combo()
             self.refresh_worlds()
             if name not in existing:
+                # Soft link: offer to name the Server after the World, but only while it
+                # still carries the stock name (never overwrite a name the user chose).
+                props = self.parse_server_properties(Path(server_path) / "server.properties")
+                if props.get("server-name", "").strip() in ("", "Dedicated Server"):
+                    if messagebox.askyesno("Name the Server too?",
+                            "Your Server still has the stock name 'Dedicated Server' — that's the name\n"
+                            "players see in their server list when they connect.\n\n"
+                            f"Name the Server '{name}' as well?"):
+                        props["server-name"] = name
+                        self.save_server_properties(Path(server_path) / "server.properties", props)
+                        self.update_server_info()
                 messagebox.showinfo("World Created",
                     f"'{name}' is now the Active World.\n\n"
                     "Bedrock will generate it the first time you start the Server.\n"
-                    "Tip: review 📝 Active Server Configuration (seed, gamemode, difficulty)\n"
-                    "before the first start — that's when they shape the new World.")
+                    "Taking you to 📝 Active Server Configuration — seed, gamemode and\n"
+                    "difficulty shape the new World on its first start.")
+                self.notebook.select(self.properties_editor)
+                self.properties_editor.load_properties()
 
     def rename_selected_world(self):
         selected = self.world_tree.selection()
@@ -1120,6 +1155,11 @@ class BedrockUpdaterApp:
             messagebox.showerror("Invalid Name", "The World name is empty or contains invalid characters.")
             return
         worlds_dir = Path(server_path) / "worlds"
+        if not (worlds_dir / old_name).exists():
+            messagebox.showinfo("Not created yet",
+                f"'{old_name}' hasn't been generated yet — it's only the Active World pointer.\n"
+                "Start the Server once to create it, or just create a new World with the name you want.")
+            return
         if (worlds_dir / new_name).exists():
             messagebox.showerror("Exists", f"A World named '{new_name}' already exists.")
             return
@@ -1745,8 +1785,19 @@ class BedrockUpdaterApp:
             return
         for item in self.world_tree.get_children():
             self.world_tree.delete(item)
-        for world in get_world_info(Path(self.server_entry.get())):
+        server_path = Path(self.server_entry.get())
+        existing = set()
+        for world in get_world_info(server_path):
+            existing.add(world["name"])
             self.world_tree.insert("", tk.END, values=(world["name"], world["size"], world["last_modified"], world["version"]))
+        # The Active World may be created-but-not-generated: show it as a pending row
+        # so a freshly created World is visibly "there" before its first start.
+        props = self.parse_server_properties(server_path / "server.properties")
+        active = props.get("level-name", "")
+        if active and active not in existing:
+            self.world_tree.insert("", 0, values=(active, "—", "created on next start", "⏳ configure, then Start"),
+                                   tags=("pending",))
+            self.world_tree.tag_configure("pending", foreground="#FF9800")
     
     def on_world_select(self, event):
         selected = self.world_tree.selection()
@@ -1943,6 +1994,9 @@ class ServerPropertiesEditor(ttk.Frame):
             entry = ttk.Entry(self.scrollable_frame, width=40)
             entry.insert(0, value)
             entry.grid(row=row_index, column=1, sticky="w", padx=5, pady=2)
+            if key == "server-name":
+                ttk.Label(self.scrollable_frame, text="(the name players see in their server list)",
+                          font=("TkDefaultFont", 8), foreground="gray").grid(row=row_index, column=2, sticky="w", padx=5)
             self.entries[key] = entry
             row_index += 1
 
