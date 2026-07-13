@@ -91,6 +91,13 @@ COMMON_GAMERULES = {
     "falldamage": ("bool", True),
 }
 
+# Matches the name + XUID in BDS console lines. Deliberately tolerant: the exact
+# wording varies between Bedrock Server Versions ("Player connected: Name, xuid: N",
+# "Player Spawned: Name xuid: N, pfid: ...", disconnect lines, case differences).
+PLAYER_XUID_RE = re.compile(
+    r"Player\s+(?:connected|disconnected|spawned)\s*:\s*(.+?)\s*,?\s*xuid:\s*(\d+)",
+    re.IGNORECASE)
+
 SERVER_SIGNATURE_FILES = ["bedrock_server.exe", "bedrock_server", "server.properties"]
 SERVER_EXECUTABLE = "bedrock_server.exe" if sys.platform == "win32" else "bedrock_server"
 
@@ -1325,9 +1332,12 @@ class BedrockUpdaterApp:
                   font=("TkDefaultFont", 8), foreground="gray").grid(row=1, column=0, columnspan=5, sticky="w", pady=(4, 0))
         self.gm_force_warn = ttk.Label(gm, text="", font=("TkDefaultFont", 8), foreground="#F44336")
         self.gm_force_warn.grid(row=2, column=0, columnspan=5, sticky="w")
-        ttk.Label(self.players_tab,
-                  text="Player names (and their XUIDs) are learned automatically whenever someone joins while this app is running.",
-                  font=("TkDefaultFont", 8), foreground="gray").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        foot = ttk.Frame(self.players_tab)
+        foot.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        ttk.Button(foot, text="🔍 Scan console for players", command=self.scan_console_for_players).pack(side=tk.LEFT)
+        ttk.Label(foot,
+                  text="Names + XUIDs are learned from join lines automatically; the scan re-reads the whole console if one was missed.",
+                  font=("TkDefaultFont", 8), foreground="gray").pack(side=tk.LEFT, padx=8)
 
     def _player_json_path(self, filename: str) -> Optional[Path]:
         server_path = self.server_entry.get()
@@ -1383,15 +1393,56 @@ class BedrockUpdaterApp:
                                         "set it to false in 📝 Configuration to allow mixed modes." if fg else ""))
 
     def _scan_console_line(self, line: str):
-        """Learn name<->XUID pairs from join messages, for the Players tab."""
-        m = re.search(r"Player connected:\s*(.+?),\s*xuid:\s*(\d+)", line)
-        if m:
-            name, xuid = m.group(1).strip(), m.group(2)
-            known = self.config.setdefault("known_players", {})
+        """Learn name<->XUID pairs live from console output, for the Players tab."""
+        if self._learn_players_from_text(line):
+            self.refresh_players_tab()
+
+    def _learn_players_from_text(self, text: str) -> int:
+        """Harvest all name<->XUID pairs from text. Returns the number of changes.
+
+        Also backfills the XUID into allowlist entries that carry the name but
+        no XUID (e.g. added manually before the player's XUID was known).
+        """
+        pairs = {}
+        for m in PLAYER_XUID_RE.finditer(text):
+            name = m.group(1).strip()
+            if name:
+                pairs[name] = m.group(2)
+        if not pairs:
+            return 0
+        known = self.config.setdefault("known_players", {})
+        changed = 0
+        for name, xuid in pairs.items():
             if known.get(name) != xuid:
                 known[name] = xuid
-                save_config(self.config)
-                self.refresh_players_tab()
+                changed += 1
+        by_lower = {n.lower(): x for n, x in pairs.items()}
+        entries = self._load_player_json("allowlist.json")
+        backfilled = False
+        for e in entries:
+            nm = e.get("name", "").lower()
+            if nm in by_lower and not e.get("xuid"):
+                e["xuid"] = by_lower[nm]
+                backfilled = True
+        if backfilled:
+            self._save_player_json("allowlist.json", entries)
+            changed += 1
+        if changed:
+            save_config(self.config)
+        return changed
+
+    def scan_console_for_players(self):
+        """Re-read the whole console buffer for player names/XUIDs (catches missed lines)."""
+        found = self._learn_players_from_text(self.console_text.get("1.0", tk.END))
+        self.refresh_players_tab()
+        known = self.config.get("known_players", {})
+        if found:
+            self.log(f"Console scan: learned/updated {found} player entr{'y' if found == 1 else 'ies'}", "success")
+        messagebox.showinfo("Scan console",
+            f"Known players: {len(known)}"
+            + (f"\nNew/updated in this scan: {found}" if found
+               else "\nNo player join lines found in the console buffer.\n\n"
+                    "Names appear when someone joins while the Server runs in this app."))
 
     def toggle_allowlist_enforcement(self):
         server_path = self.server_entry.get()

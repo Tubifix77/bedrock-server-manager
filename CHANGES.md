@@ -20,8 +20,11 @@ Player management and per-World gamerules — the two systems that live *outside
   - **Per-player game mode** — pick a player, click Survival / Creative / Adventure; sent live
     to the running Server so different players can play different modes on the same Server.
     Warns if `force-gamemode=true` would defeat mixed modes.
-  - Player names + XUIDs are **learned automatically** from "Player connected" console lines
-    (stored as `known_players` in the app config).
+  - Player names + XUIDs are **learned automatically** from join/leave console lines (tolerant
+    of wording differences between Bedrock Server Versions), stored as `known_players` in the
+    app config. A **🔍 Scan console for players** button re-reads the whole console buffer in
+    case a line was missed, and learned XUIDs are **backfilled** into allowlist entries that
+    were added by name only.
 - **🎲 Gamerules dialog** (Server tab) — reads the Active World's current gamerules straight
   from `level.dat` (sleep percentage, keepinventory, mobgriefing, daylight/weather cycle,
   fire tick, TNT, insomnia/phantoms, PvP, coordinates, fall damage) and applies changes live
