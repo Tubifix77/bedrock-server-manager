@@ -1,4 +1,4 @@
-# GUI design & terminology (as of 1.0.3)
+# GUI design & terminology (as of 1.0.4)
 
 The naming convention and tab layout agreed for this app. Use these words consistently —
 in the GUI, in docs, and when discussing changes. The point is to undo Bedrock's own
@@ -25,12 +25,13 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
 
 | # | Tab | Role | Holds |
 |---|-----|------|-------|
-| 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **Active World dropdown** (existing Worlds only, plain names — the selected entry *is* the active World, no extra "(active)" tag; greys out while running with an inline "Not available until the running Server is stopped" hint — no static helper text while stopped) · network info · console (half height) |
+| 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **🎲 Gamerules** dialog (reads the Active World's `level.dat`, applies live via `gamerule` commands — gamerules are per-World and are *not* `server.properties`) · **Active World dropdown** (existing Worlds only, plain names — the selected entry *is* the active World, no extra "(active)" tag; greys out while running with an inline "Not available until the running Server is stopped" hint — no static helper text while stopped) · network info · console (half height) |
 | 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — where new users land after a fresh install; ends by jumping to Active Server Configuration) · Worlds list with sizes, dates, **Last Run On** — the Active World is marked **✅ ACTIVE**; a created-but-not-yet-generated Active World shows as an orange *"created on next start"* pending row · **Set as Active World** (if the Server runs: confirm → stop nicely → switch → start again) · Rename / Delete (refuse a running Server; Delete refuses the Active World) |
-| 3 | **📝 Configuration** | Edit the Server | Page header: **Active Server Configuration**. `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (seed, gamemode…). |
-| 4 | **💾 Backups** | Per-Server backups | Header **names the Server** and where backups live · **What to back up** checklist (the preserve list — same list updates preserve) · backup list (~⅓ height) · restore/delete |
-| 5 | **🔄 Update** | Swap the Bedrock Server Version | Installed version · ZIP picker · steps **1: Wiki Version → 2: Download Latest → 3: Update Server** · Dry Run / Open Folder (small, right) · activity log |
-| 6 | **⚙️ Settings** | App-level | **Server Location** (the Server Folder — one-time setup) · backup/update/interface prefs · dark mode |
+| 3 | **👥 Players** | Manage people | **Access**: allowlist editor + "restrict joining" toggle (writes `allow-list`, live `allowlist on/off`; empty-list warning; Bedrock has **no blacklist**) · **Roles**: `permissions.json` visitor/member/operator (live `permission reload`) · **Game mode per player** (live `gamemode` command → mixed modes; warns if `force-gamemode=true`). Names+XUIDs auto-learned from join lines into `known_players`. |
+| 4 | **📝 Configuration** | Edit the Server | Page header: **Active Server Configuration**. `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (seed, gamemode…). |
+| 5 | **💾 Backups** | Per-Server backups | Header **names the Server** and where backups live · **What to back up** checklist (the preserve list — same list updates preserve) · backup list (~⅓ height) · restore/delete |
+| 6 | **🔄 Update** | Swap the Bedrock Server Version | Installed version · ZIP picker · steps **1: Wiki Version → 2: Download Latest → 3: Update Server** · Dry Run / Open Folder (small, right) · activity log |
+| 7 | **⚙️ Settings** | App-level | **Server Location** (the Server Folder — one-time setup) · backup/update/interface prefs · dark mode |
 
 ## Rationale (decisions, so they don't get relitigated)
 
@@ -49,6 +50,13 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
   update preserves" are the same list — Update reads it from there.
 - **"Worlds", not "New"**: in a *server manager*, a tab called "New" reads as "new Server" —
   which is a different (future) feature.
+- **Three config systems, told apart honestly** (v1.0.4): `server.properties` (Configuration
+  tab) vs **gamerules** (per-World, `level.dat`, set via `gamerule` command → the 🎲 dialog)
+  vs **player files** (`allowlist.json` / `permissions.json` → the Players tab). Don't blur
+  them — "1 person sleeps" is a gamerule, not a property, and Bedrock has **no blacklist**
+  (exclusion = allowlist enforcement without that player). Live changes go through console
+  commands (`allowlist on/off/add/remove`, `permission reload`, `gamemode`, `gamerule`) —
+  the console is never blocked by `allow-cheats=false`.
 - **No *silent* auto-stop side effects** (user decisions, July 2026): ambient controls (the
   Active World dropdown) grey out with an inline reason while the Server runs — they never
   stop it for you. The one exception is the explicit **Set as Active World** button, which

@@ -9,7 +9,7 @@ A single-file Python/tkinter desktop GUI for managing Minecraft Bedrock Dedicate
 `_linux` filename, the code is genuinely cross-platform — every OS-specific operation
 branches on `sys.platform == "win32"`.
 
-All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py) (~2000 lines).
+All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py) (~2300 lines).
 The other files are a desktop launcher, packaging scripts, docs, and license.
 
 **Terminology (used in the GUI and all discussions — see [docs/GUI-DESIGN.md](docs/GUI-DESIGN.md)):**
@@ -45,13 +45,18 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   **observer/callback pattern**: register `output_callbacks` / `status_callbacks`; a daemon
   thread reads stdout and fans lines out to callbacks. Commands are sent via stdin
   (`send_command`), graceful stop sends the `stop` command then falls back to kill.
-- **`BedrockUpdaterApp`** — the main window. Builds a 6-tab `ttk.Notebook` in this order:
-  **Server** (home: Active Server Information, Active World dropdown, start/stop, console) /
-  **Worlds** (create, rename, delete, per-World last-run version) /
+- **`BedrockUpdaterApp`** — the main window. Builds a 7-tab `ttk.Notebook` in this order:
+  **Server** (home: Active Server Information, Active World dropdown, start/stop, 🎲 Gamerules
+  dialog, console) / **Worlds** (create, rename, delete, per-World last-run version) /
+  **Players** (allowlist + roles + per-player gamemode; names/XUIDs harvested from join lines
+  into the `known_players` config key) /
   **Configuration** (the properties editor; page header "Active Server Configuration") /
   **Backups** (preserve checklist +
   backup list, header names the Server) / **Update** (Bedrock Server Version tools) /
   **Settings** (app prefs + the Server Folder picker, `self.server_entry`).
+  Three config systems, kept distinct: `server.properties` (Configuration), per-World
+  **gamerules** in `level.dat` (set live via `gamerule` console command), and the player JSON
+  files (`allowlist.json`/`permissions.json`). Bedrock has no blacklist.
 - **`ServerPropertiesEditor`** — a `ttk.Frame` subclass that renders `server.properties` as
   editable key/value rows (skips `level-name`, owned by the Active World dropdown on Server).
 - **World versions** — `get_world_last_opened_version()` reads the `lastOpenedWithVersion`

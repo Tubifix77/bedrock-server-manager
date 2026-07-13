@@ -19,7 +19,7 @@ which also bundles `minecraft.png` so the in-app window icon works in a frozen b
 and the Linux AppImage and attaches them to a GitHub Release:
 
 ```bash
-git tag v1.0.3 && git push origin v1.0.3
+git tag v1.0.4 && git push origin v1.0.4
 ```
 
 The tag name (minus the leading `v`) becomes the artifact version. You can also run the workflow
@@ -33,15 +33,15 @@ manually from the Actions tab (**Run workflow**) to build artifacts without publ
 py -m venv .buildvenv; .buildvenv\Scripts\pip install pyinstaller
 .buildvenv\Scripts\pyinstaller bedrock_updater.spec --noconfirm --clean
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\installer.iss
-# -> dist_installer\BedrockServerManager-1.0.3-Setup.exe
+# -> dist_installer\BedrockServerManager-1.0.4-Setup.exe
 ```
 
 **Linux** (needs `python3-tk` and `curl`):
 
 ```bash
 python3 -m pip install pyinstaller
-packaging/linux/build-appimage.sh 1.0.3
-# -> BedrockServerManager-1.0.3-x86_64.AppImage
+packaging/linux/build-appimage.sh 1.0.4
+# -> BedrockServerManager-1.0.4-x86_64.AppImage
 ```
 
 ## Regenerating the Windows icon
@@ -58,7 +58,7 @@ Image.open("minecraft.png").convert("RGBA").save(
 
 Keep these in sync: `APP_VERSION` in [`../bedrock_updater_linux.py`](../bedrock_updater_linux.py),
 the README badge, and the git tag (the tag drives the artifact filenames; the Inno script and
-AppImage script default to `1.0.3` only when built outside CI).
+AppImage script default to `1.0.4` only when built outside CI).
 
 ## Notes
 

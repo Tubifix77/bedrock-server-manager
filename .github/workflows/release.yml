@@ -22,7 +22,7 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          $v = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '1.0.3' }
+          $v = if ($env:GITHUB_REF_NAME -match '^v') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '1.0.4' }
           "version=$v" >> $env:GITHUB_OUTPUT
       - name: Install build deps
         run: pip install pyinstaller
@@ -58,7 +58,7 @@ jobs:
           if [[ "$GITHUB_REF_NAME" == v* ]]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=1.0.3" >> "$GITHUB_OUTPUT"
+            echo "version=1.0.4" >> "$GITHUB_OUTPUT"
           fi
       - name: Install build deps
         run: pip install pyinstaller

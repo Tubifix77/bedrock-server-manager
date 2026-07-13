@@ -33,7 +33,7 @@ import time
 # ============================================================================
 
 APP_NAME = "Bedrock Server Manager"
-APP_VERSION = "1.0.3-Linux"
+APP_VERSION = "1.0.4-Linux"
 APP_AUTHOR = "Tue Wincentz Boas - Built with Claude AI & Gemini 3"
 CONFIG_FILENAME = ".bedrock_updater_config.json"
 MINECRAFT_DOWNLOAD_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
@@ -72,6 +72,23 @@ DEFAULT_SETTINGS = {
     "active_profile": "default",
     "console_font_size": 9,
     "console_max_lines": 1000,
+    "known_players": {},
+}
+
+# Gamerules surfaced in the Gamerules dialog (they live per-World, set via the
+# `gamerule` console command — NOT in server.properties).
+COMMON_GAMERULES = {
+    "playerssleepingpercentage": ("int", 100),
+    "keepinventory": ("bool", False),
+    "showcoordinates": ("bool", False),
+    "pvp": ("bool", True),
+    "mobgriefing": ("bool", True),
+    "dodaylightcycle": ("bool", True),
+    "doweathercycle": ("bool", True),
+    "dofiretick": ("bool", True),
+    "tntexplodes": ("bool", True),
+    "doinsomnia": ("bool", True),
+    "falldamage": ("bool", True),
 }
 
 SERVER_SIGNATURE_FILES = ["bedrock_server.exe", "bedrock_server", "server.properties"]
@@ -265,6 +282,37 @@ def get_world_last_opened_version(world_dir: Path) -> str:
         return ".".join(str(n) for n in nums)
     except Exception:
         return "Unknown"
+
+def read_world_gamerules(world_dir: Path) -> Dict[str, object]:
+    """Best-effort read of COMMON_GAMERULES from a world's level.dat.
+
+    Same little-endian NBT byte-scan as get_world_last_opened_version:
+    tag-type byte, int16 name length, name, then payload (TAG_Byte for
+    bools, TAG_Int for ints). Values are as of the world's last save.
+    """
+    values = {}
+    level_dat = world_dir / "level.dat"
+    if not level_dat.exists():
+        return values
+    try:
+        data = level_dat.read_bytes()
+        for rule, (kind, _default) in COMMON_GAMERULES.items():
+            key = rule.encode()
+            idx = data.find(key)
+            while idx != -1:
+                if idx >= 3 and int.from_bytes(data[idx - 2:idx], "little") == len(key):
+                    tag = data[idx - 3]
+                    pos = idx + len(key)
+                    if tag == 1 and kind == "bool":
+                        values[rule] = bool(data[pos])
+                        break
+                    if tag == 3 and kind == "int":
+                        values[rule] = int.from_bytes(data[pos:pos + 4], "little", signed=True)
+                        break
+                idx = data.find(key, idx + 1)
+    except Exception:
+        pass
+    return values
 
 def make_executable(file_path: Path):
     """Make a file executable on Unix systems."""
@@ -773,6 +821,10 @@ class BedrockUpdaterApp:
         self.notebook.add(self.worlds_tab, text="🌍 Worlds")
         self.setup_worlds_tab()
 
+        self.players_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.players_tab, text="👥 Players")
+        self.setup_players_tab()
+
         self.properties_editor = ServerPropertiesEditor(self.notebook, self)
         self.notebook.add(self.properties_editor, text="📝 Configuration")
 
@@ -884,6 +936,7 @@ class BedrockUpdaterApp:
         self.stop_btn.pack(side=tk.LEFT, padx=5)
         self.restart_btn = ttk.Button(btn_frame, text="🔄 Restart", command=self.restart_server, width=15)
         self.restart_btn.pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="🎲 Gamerules", command=self.open_gamerules_dialog, width=15).pack(side=tk.LEFT, padx=5)
         self.server_running_label = ttk.Label(btn_frame, text="⬤ Stopped", foreground="red")
         self.server_running_label.pack(side=tk.RIGHT, padx=20)
         world_frame = ttk.Frame(control_frame)
@@ -1216,6 +1269,295 @@ class BedrockUpdaterApp:
         self.refresh_world_combo()
         self.update_server_info()
 
+    def setup_players_tab(self):
+        self.players_tab.columnconfigure(0, weight=1)
+        # --- Access: the allowlist (Bedrock's only join control — there is no blacklist) ---
+        access = ttk.LabelFrame(self.players_tab, text="Access — who may join (allowlist.json)", padding=10)
+        access.grid(row=0, column=0, sticky="ew", pady=5)
+        access.columnconfigure(0, weight=1)
+        self.allowlist_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(access,
+                        text="Restrict joining to this list (Bedrock has no blacklist — leaving someone off the list is how you keep them out)",
+                        variable=self.allowlist_var, command=self.toggle_allowlist_enforcement).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        acols = ("name", "xuid", "ignores_limit")
+        self.allow_tree = ttk.Treeview(access, columns=acols, show="headings", height=4)
+        self.allow_tree.heading("name", text="Player")
+        self.allow_tree.heading("xuid", text="XUID")
+        self.allow_tree.heading("ignores_limit", text="Ignores player limit")
+        self.allow_tree.column("name", width=210)
+        self.allow_tree.column("xuid", width=170)
+        self.allow_tree.column("ignores_limit", width=130, anchor="center")
+        self.allow_tree.grid(row=1, column=0, sticky="ew")
+        abtns = ttk.Frame(access)
+        abtns.grid(row=1, column=1, sticky="ns", padx=(8, 0))
+        ttk.Button(abtns, text="➕ Add", command=self.add_allowlist_player, width=10).pack(pady=2)
+        ttk.Button(abtns, text="➖ Remove", command=self.remove_allowlist_player, width=10).pack(pady=2)
+        # --- Roles: permissions.json ---
+        perms = ttk.LabelFrame(self.players_tab, text="Roles — visitor / member / operator (permissions.json)", padding=10)
+        perms.grid(row=1, column=0, sticky="ew", pady=5)
+        perms.columnconfigure(0, weight=1)
+        pcols = ("name", "xuid", "permission")
+        self.perm_tree = ttk.Treeview(perms, columns=pcols, show="headings", height=4)
+        self.perm_tree.heading("name", text="Player")
+        self.perm_tree.heading("xuid", text="XUID")
+        self.perm_tree.heading("permission", text="Role")
+        self.perm_tree.column("name", width=210)
+        self.perm_tree.column("xuid", width=170)
+        self.perm_tree.column("permission", width=100, anchor="center")
+        self.perm_tree.grid(row=0, column=0, columnspan=6, sticky="ew")
+        ttk.Label(perms, text="Player:").grid(row=1, column=0, sticky="e", pady=(6, 0))
+        self.perm_player_combo = ttk.Combobox(perms, width=22)
+        self.perm_player_combo.grid(row=1, column=1, sticky="w", padx=4, pady=(6, 0))
+        ttk.Button(perms, text="Operator", command=lambda: self.set_player_permission("operator")).grid(row=1, column=2, padx=2, pady=(6, 0))
+        ttk.Button(perms, text="Member", command=lambda: self.set_player_permission("member")).grid(row=1, column=3, padx=2, pady=(6, 0))
+        ttk.Button(perms, text="Visitor", command=lambda: self.set_player_permission("visitor")).grid(row=1, column=4, padx=2, pady=(6, 0))
+        ttk.Button(perms, text="Remove entry", command=self.remove_permission_entry).grid(row=1, column=5, padx=(10, 0), pady=(6, 0))
+        # --- Per-player game mode: mixed survival/creative on one Server ---
+        gm = ttk.LabelFrame(self.players_tab, text="Game mode — per player (mix survival and creative on one Server)", padding=10)
+        gm.grid(row=2, column=0, sticky="ew", pady=5)
+        ttk.Label(gm, text="Player:").grid(row=0, column=0, sticky="e")
+        self.gm_player_combo = ttk.Combobox(gm, width=22)
+        self.gm_player_combo.grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Button(gm, text="⛏️ Survival", command=lambda: self.set_player_gamemode("survival")).grid(row=0, column=2, padx=2)
+        ttk.Button(gm, text="🧱 Creative", command=lambda: self.set_player_gamemode("creative")).grid(row=0, column=3, padx=2)
+        ttk.Button(gm, text="🗺️ Adventure", command=lambda: self.set_player_gamemode("adventure")).grid(row=0, column=4, padx=2)
+        ttk.Label(gm, text="Applies live to an online player and sticks for them afterwards (Server must be running).",
+                  font=("TkDefaultFont", 8), foreground="gray").grid(row=1, column=0, columnspan=5, sticky="w", pady=(4, 0))
+        self.gm_force_warn = ttk.Label(gm, text="", font=("TkDefaultFont", 8), foreground="#F44336")
+        self.gm_force_warn.grid(row=2, column=0, columnspan=5, sticky="w")
+        ttk.Label(self.players_tab,
+                  text="Player names (and their XUIDs) are learned automatically whenever someone joins while this app is running.",
+                  font=("TkDefaultFont", 8), foreground="gray").grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+    def _player_json_path(self, filename: str) -> Optional[Path]:
+        server_path = self.server_entry.get()
+        if not server_path or not Path(server_path).exists():
+            return None
+        return Path(server_path) / filename
+
+    def _load_player_json(self, filename: str) -> list:
+        p = self._player_json_path(filename)
+        try:
+            if p and p.exists():
+                data = json.loads(p.read_text())
+                return data if isinstance(data, list) else []
+        except Exception:
+            pass
+        return []
+
+    def _save_player_json(self, filename: str, entries: list):
+        p = self._player_json_path(filename)
+        if not p:
+            return
+        try:
+            p.write_text(json.dumps(entries, indent=2))
+        except Exception as e:
+            messagebox.showerror("Players", f"Could not save {filename}:\n{e}")
+
+    def refresh_players_tab(self):
+        if not hasattr(self, 'allow_tree') or not hasattr(self, 'server_entry'):
+            return
+        server_path = self.server_entry.get()
+        props = {}
+        if server_path and Path(server_path).exists():
+            props = self.parse_server_properties(Path(server_path))
+        self.allowlist_var.set(props.get("allow-list", "false").lower() == "true")
+        for i in self.allow_tree.get_children():
+            self.allow_tree.delete(i)
+        allow_entries = self._load_player_json("allowlist.json")
+        for e in allow_entries:
+            self.allow_tree.insert("", tk.END, values=(e.get("name", ""), e.get("xuid", ""),
+                                                       "yes" if e.get("ignoresPlayerLimit") else "no"))
+        known = self.config.get("known_players", {})
+        by_xuid = {str(v): k for k, v in known.items()}
+        for i in self.perm_tree.get_children():
+            self.perm_tree.delete(i)
+        for e in self._load_player_json("permissions.json"):
+            x = str(e.get("xuid", ""))
+            self.perm_tree.insert("", tk.END, values=(by_xuid.get(x, "(unknown)"), x, e.get("permission", "member")))
+        names = sorted({n for n in list(known.keys()) + [a.get("name", "") for a in allow_entries] if n}, key=str.lower)
+        self.perm_player_combo.config(values=names)
+        self.gm_player_combo.config(values=names)
+        fg = props.get("force-gamemode", "false").lower() == "true"
+        self.gm_force_warn.config(text=("⚠ force-gamemode=true resets everyone to the default mode on every join — "
+                                        "set it to false in 📝 Configuration to allow mixed modes." if fg else ""))
+
+    def _scan_console_line(self, line: str):
+        """Learn name<->XUID pairs from join messages, for the Players tab."""
+        m = re.search(r"Player connected:\s*(.+?),\s*xuid:\s*(\d+)", line)
+        if m:
+            name, xuid = m.group(1).strip(), m.group(2)
+            known = self.config.setdefault("known_players", {})
+            if known.get(name) != xuid:
+                known[name] = xuid
+                save_config(self.config)
+                self.refresh_players_tab()
+
+    def toggle_allowlist_enforcement(self):
+        server_path = self.server_entry.get()
+        if not server_path or not Path(server_path).exists():
+            self.allowlist_var.set(False)
+            messagebox.showwarning("Players", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+            return
+        enable = self.allowlist_var.get()
+        if enable and not self._load_player_json("allowlist.json"):
+            if not messagebox.askyesno("Empty allowlist",
+                    "The allowlist is empty — with enforcement ON, nobody can join until you add players.\n\nTurn it on anyway?"):
+                self.allowlist_var.set(False)
+                return
+        props_path = Path(server_path) / "server.properties"
+        props = self.parse_server_properties(props_path)
+        props["allow-list"] = "true" if enable else "false"
+        self.save_server_properties(props_path, props)
+        if self.server_manager and self.server_manager.is_running():
+            self.server_manager.send_command("allowlist " + ("on" if enable else "off"))
+        self.log(f"Allowlist enforcement {'ON' if enable else 'OFF'}", "success")
+
+    def add_allowlist_player(self):
+        if not self._player_json_path("allowlist.json"):
+            messagebox.showwarning("Players", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+            return
+        name = simpledialog.askstring("Add player", "Player gamertag (exact Xbox name):", parent=self.root)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        entries = self._load_player_json("allowlist.json")
+        if any(e.get("name", "").lower() == name.lower() for e in entries):
+            messagebox.showinfo("Already listed", f"'{name}' is already on the allowlist.")
+            return
+        entry = {"ignoresPlayerLimit": False, "name": name}
+        xuid = self.config.get("known_players", {}).get(name)
+        if xuid:
+            entry["xuid"] = str(xuid)
+        entries.append(entry)
+        self._save_player_json("allowlist.json", entries)
+        if self.server_manager and self.server_manager.is_running():
+            self.server_manager.send_command(f'allowlist add "{name}"')
+        self.log(f"Added '{name}' to the allowlist", "success")
+        self.refresh_players_tab()
+
+    def remove_allowlist_player(self):
+        sel = self.allow_tree.selection()
+        if not sel:
+            messagebox.showwarning("Players", "Select an allowlist entry to remove.")
+            return
+        name = str(self.allow_tree.item(sel[0])["values"][0])
+        entries = [e for e in self._load_player_json("allowlist.json") if e.get("name") != name]
+        self._save_player_json("allowlist.json", entries)
+        if self.server_manager and self.server_manager.is_running():
+            self.server_manager.send_command(f'allowlist remove "{name}"')
+        self.log(f"Removed '{name}' from the allowlist", "info")
+        self.refresh_players_tab()
+
+    def set_player_permission(self, level: str):
+        if not self._player_json_path("permissions.json"):
+            messagebox.showwarning("Players", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+            return
+        name = self.perm_player_combo.get().strip()
+        if not name:
+            messagebox.showwarning("Players", "Pick or type a player name first.")
+            return
+        xuid = self.config.get("known_players", {}).get(name)
+        if not xuid:
+            xuid = simpledialog.askstring("XUID needed",
+                f"No XUID known for '{name}' yet — Bedrock keys roles by XUID.\n"
+                "Easiest: Cancel, and have them join once while this app runs.\n"
+                "Or enter their XUID manually:", parent=self.root)
+            if not xuid:
+                return
+            xuid = xuid.strip()
+            if not xuid.isdigit():
+                messagebox.showerror("Players", "A XUID is a number.")
+                return
+            self.config.setdefault("known_players", {})[name] = xuid
+            save_config(self.config)
+        entries = [e for e in self._load_player_json("permissions.json") if str(e.get("xuid")) != str(xuid)]
+        entries.append({"permission": level, "xuid": str(xuid)})
+        self._save_player_json("permissions.json", entries)
+        if self.server_manager and self.server_manager.is_running():
+            self.server_manager.send_command("permission reload")
+        self.log(f"Role for '{name}' set to {level}", "success")
+        self.refresh_players_tab()
+
+    def remove_permission_entry(self):
+        sel = self.perm_tree.selection()
+        if not sel:
+            messagebox.showwarning("Players", "Select a role entry to remove.")
+            return
+        xuid = str(self.perm_tree.item(sel[0])["values"][1])
+        entries = [e for e in self._load_player_json("permissions.json") if str(e.get("xuid")) != xuid]
+        self._save_player_json("permissions.json", entries)
+        if self.server_manager and self.server_manager.is_running():
+            self.server_manager.send_command("permission reload")
+        self.log("Removed role entry (player is back at the default level)", "info")
+        self.refresh_players_tab()
+
+    def set_player_gamemode(self, mode: str):
+        if not (self.server_manager and self.server_manager.is_running()):
+            messagebox.showwarning("Server stopped",
+                "Start the Server first — game mode is set live, per player, while they're online.")
+            return
+        name = self.gm_player_combo.get().strip()
+        if not name:
+            messagebox.showwarning("Players", "Pick or type a player name first.")
+            return
+        self.server_manager.send_command(f'gamemode {mode} "{name}"')
+        self.console_log(f'> gamemode {mode} "{name}"')
+        self.log(f"Requested {mode} for '{name}' — they must be online (check the console reply)", "info")
+
+    def open_gamerules_dialog(self):
+        server_path = self.server_entry.get()
+        if not server_path or not Path(server_path).exists():
+            messagebox.showwarning("Gamerules", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+            return
+        props = self.parse_server_properties(Path(server_path))
+        active = props.get("level-name", "")
+        current = read_world_gamerules(Path(server_path) / "worlds" / active)
+        running = bool(self.server_manager and self.server_manager.is_running())
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Gamerules — {active}")
+        dlg.transient(self.root)
+        frm = ttk.Frame(dlg, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text=f"Gamerules for Active World: {active}",
+                  font=("TkDefaultFont", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        note = ("Changes are sent live to the running Server." if running
+                else "Server is stopped — values shown are from the last save. Start the Server to change them.")
+        ttk.Label(frm, text=note, font=("TkDefaultFont", 8),
+                  foreground=("#4CAF50" if running else "#FF9800")).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        state = tk.NORMAL if running else tk.DISABLED
+        r = 2
+        for rule, (kind, default) in COMMON_GAMERULES.items():
+            ttk.Label(frm, text=rule).grid(row=r, column=0, sticky="w", padx=(0, 12), pady=2)
+            if kind == "bool":
+                var = tk.BooleanVar(value=bool(current.get(rule, default)))
+                ttk.Checkbutton(frm, variable=var, state=state,
+                                command=lambda rl=rule, v=var, k=kind: self._send_gamerule(rl, v, k)).grid(row=r, column=1, sticky="w")
+            else:
+                var = tk.IntVar(value=int(current.get(rule, default)))
+                ttk.Spinbox(frm, from_=0, to=100, width=6, textvariable=var, state=state).grid(row=r, column=1, sticky="w")
+                ttk.Button(frm, text="Set", width=5, state=state,
+                           command=lambda rl=rule, v=var, k=kind: self._send_gamerule(rl, v, k)).grid(row=r, column=2, sticky="w", padx=4)
+            r += 1
+        ttk.Label(frm, text="Tip: playerssleepingpercentage 0 = one sleeper is enough to skip the night.",
+                  font=("TkDefaultFont", 8), foreground="gray").grid(row=r, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Button(frm, text="Close", command=dlg.destroy).grid(row=r + 1, column=0, columnspan=3, pady=(10, 0))
+
+    def _send_gamerule(self, rule: str, var, kind: str):
+        if not (self.server_manager and self.server_manager.is_running()):
+            messagebox.showwarning("Server stopped", "Start the Server to change gamerules.")
+            return
+        try:
+            value = ("true" if var.get() else "false") if kind == "bool" else str(max(0, min(100, int(var.get()))))
+        except Exception:
+            messagebox.showerror("Gamerules", "Enter a number between 0 and 100.")
+            return
+        self.server_manager.send_command(f"gamerule {rule} {value}")
+        self.console_log(f"> gamerule {rule} {value}")
+        self.log(f"gamerule {rule} = {value}", "success")
+
     def setup_settings_tab(self):
         self.settings_tab.columnconfigure(0, weight=1)
         location_frame = ttk.LabelFrame(self.settings_tab, text="Server Location", padding=10)
@@ -1363,18 +1705,22 @@ class BedrockUpdaterApp:
             self.refresh_worlds()
         elif current is self.server_tab:
             self.update_server_info()
+        elif current is self.players_tab:
+            self.refresh_players_tab()
 
     def initialize_managers(self):
         server_path = Path(self.server_entry.get())
         if server_path.exists():
             self.server_manager = ServerManager(server_path)
             self.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self.console_log(line)))
+            self.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self._scan_console_line(line)))
             self.server_manager.add_status_callback(lambda status: self.root.after(0, lambda: self.update_server_status(status)))
             self.backup_manager = BackupManager(server_path, self.config)
             self.refresh_backups()
             self.refresh_worlds()
             self.refresh_world_combo()
             self.refresh_backup_header()
+            self.refresh_players_tab()
             self.update_network_info()
     
     def update_server_status(self, status: str):

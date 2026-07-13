@@ -4,6 +4,31 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [1.0.4] — 2026-07-13
+
+Player management and per-World gamerules — the two systems that live *outside*
+`server.properties` and therefore couldn't be reached from the Configuration tab.
+
+### Added
+- **👥 Players tab** (after Worlds):
+  - **Access** — allowlist editor (`allowlist.json`) with a master *"restrict joining to this
+    list"* toggle that also writes `allow-list` (and applies live via `allowlist on/off` when
+    the Server runs). Turning it on with an empty list warns first. Includes the honest note
+    that Bedrock has **no blacklist** — exclusion = allowlist without that player.
+  - **Roles** — `permissions.json` editor: set visitor / member / operator per player
+    (applies live via `permission reload`).
+  - **Per-player game mode** — pick a player, click Survival / Creative / Adventure; sent live
+    to the running Server so different players can play different modes on the same Server.
+    Warns if `force-gamemode=true` would defeat mixed modes.
+  - Player names + XUIDs are **learned automatically** from "Player connected" console lines
+    (stored as `known_players` in the app config).
+- **🎲 Gamerules dialog** (Server tab) — reads the Active World's current gamerules straight
+  from `level.dat` (sleep percentage, keepinventory, mobgriefing, daylight/weather cycle,
+  fire tick, TNT, insomnia/phantoms, PvP, coordinates, fall damage) and applies changes live
+  via `gamerule` console commands. `playerssleepingpercentage 0` = one sleeper skips the night.
+
+---
+
 ## [1.0.3] — 2026-07-13
 
 GUI restructured around a clear model: a **Server** (one install, one port) holds **Worlds**;
