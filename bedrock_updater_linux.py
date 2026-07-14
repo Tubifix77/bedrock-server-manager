@@ -2024,6 +2024,13 @@ class BedrockUpdaterApp:
         self.notebook = ttk.Notebook(notebook_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
+        # Overview pane (Fleet / Machine page) shown INSTEAD of the notebook
+        # when the sidebar's Fleet root or a Machine node is selected -- see
+        # docs/V2-MAJORDOMO-PLAN.md, "Fleet overview + machine page". Built
+        # fresh each time it's shown; toggled via show_notebook()/show_overview().
+        self.overview_frame = ttk.Frame(notebook_frame, padding=15)
+        self._overview_kind = None
+
         # Tab order: daily use first — Server is the home tab.
         self.server_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.server_tab, text="🎮 Server")
@@ -2081,6 +2088,8 @@ class BedrockUpdaterApp:
         self._sidebar_refreshing = True
         try:
             self.sidebar_tree.delete(*self.sidebar_tree.get_children())
+            # Fleet: every Server across every Machine, one place to see/start/stop all of them.
+            self.sidebar_tree.insert("", 0, iid="fleet", text="🌐 Fleet (All Servers)")
             # This computer + its local Server profiles.
             local_node = self.sidebar_tree.insert("", tk.END, iid="machine:local",
                                                    text="🖥 This computer", open=True)
@@ -2118,8 +2127,25 @@ class BedrockUpdaterApp:
                     self.sidebar_tree.selection_set(sel_iid)
                 except tk.TclError:
                     pass
+            elif self._overview_kind:
+                if self._overview_kind[0] == "fleet":
+                    ov_iid = "fleet"
+                elif self._overview_kind[1] == "local":
+                    ov_iid = "machine:local"
+                else:
+                    ov_iid = f"rmachine:{self._overview_kind[2]}"
+                try:
+                    self.sidebar_tree.selection_set(ov_iid)
+                except tk.TclError:
+                    pass
         finally:
             self._sidebar_refreshing = False
+        # Keep whatever overview page is on screen live (status dots etc.).
+        if self._overview_kind:
+            if self._overview_kind[0] == "fleet":
+                self.build_fleet_overview()
+            else:
+                self.build_machine_page(self._overview_kind[1], self._overview_kind[2])
 
     def on_sidebar_select(self, event=None):
         if getattr(self, "_sidebar_refreshing", False):
@@ -2132,7 +2158,10 @@ class BedrockUpdaterApp:
         # A local Server profile.
         if iid.startswith("profile:"):
             new_id = iid.split(":", 1)[1]
-            if new_id == self.config.get("active_profile") and not self.active_remote:
+            # Even if this IS already the active profile, still proceed if we're
+            # currently showing an overview page (Fleet/Machine) -- otherwise
+            # clicking back to the already-active Server would do nothing.
+            if new_id == self.config.get("active_profile") and not self.active_remote and not self._overview_kind:
                 return
             if not self._confirm_leave_unsaved():
                 self.refresh_sidebar()
@@ -2143,14 +2172,32 @@ class BedrockUpdaterApp:
         # A remote Server.
         if iid.startswith("rprofile:"):
             _, mid, sid = iid.split(":", 2)
-            if self.active_remote == (mid, sid):
+            if self.active_remote == (mid, sid) and not self._overview_kind:
                 return
             self._select_remote_server(mid, sid)
             return
 
-        # A Machine node or the "(connecting…)" placeholder -- no page yet
-        # (Fleet/Machine page is Stage 3d-4); keep the current selection.
-        self.refresh_sidebar()
+        # The Fleet root: every Server across every Machine.
+        if iid == "fleet":
+            self._overview_kind = ("fleet",)
+            self.show_overview()
+            self.build_fleet_overview()
+            return
+
+        # "This computer" -- a local Machine page.
+        if iid == "machine:local":
+            self._overview_kind = ("machine", "local", "local")
+            self.show_overview()
+            self.build_machine_page("local", "local")
+            return
+
+        # A remote Machine node, or its "(connecting…)" placeholder.
+        if iid.startswith("rmachine:") or iid.startswith("rinfo:"):
+            mid = iid.split(":", 1)[1]
+            self._overview_kind = ("machine", "remote", mid)
+            self.show_overview()
+            self.build_machine_page("remote", mid)
+            return
 
     def _confirm_leave_unsaved(self) -> bool:
         if hasattr(self, 'properties_editor') and self.properties_editor.has_unsaved_changes():
@@ -2163,6 +2210,8 @@ class BedrockUpdaterApp:
         """Point every tab at a different Server. See docs/V2-MAJORDOMO-PLAN.md,
         'GUI: sidebar + the same 7 tabs' -- a still-running previous Server is
         NOT stopped; it keeps running in the registry, which is the point."""
+        self._overview_kind = None
+        self.show_notebook()
         self._sync_flat_settings_into_active_profile()
         self.config["active_profile"] = profile_id
         hydrate_active_profile_cache(self.config)
@@ -2304,6 +2353,8 @@ class BedrockUpdaterApp:
                     "The Active Server Configuration has unsaved changes.\n\nDiscard them and switch Servers?"):
                 self.refresh_sidebar()
                 return
+        self._overview_kind = None
+        self.show_notebook()
         self.active_access = RemoteServerAccess(conn, server_id)
         self.active_remote = (machine_id, server_id)
         self.config["active_profile"] = None  # a remote Server is selected, not a local profile
@@ -2407,6 +2458,202 @@ class BedrockUpdaterApp:
         ttk.Button(btns, text="Test connection", command=lambda: do_test(False)).pack(side=tk.LEFT, padx=3)
         ttk.Button(btns, text="Save", command=lambda: do_test(True), style="Primary.TButton").pack(side=tk.LEFT, padx=3)
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=3)
+
+    # ==================================================================
+    # Fleet overview + Machine page (Stage 4a) -- shown INSTEAD of the
+    # notebook when the sidebar's Fleet root or a Machine node is selected.
+    # ==================================================================
+    def show_notebook(self):
+        self.overview_frame.pack_forget()
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+    def show_overview(self):
+        self.notebook.pack_forget()
+        self.overview_frame.pack(fill=tk.BOTH, expand=True)
+
+    def _fleet_rows_for(self, only_machine=None):
+        """Yield (iid, machine_label, server_label, running, row_info) for
+        every Server, optionally filtered to one Machine ('local' or a
+        machine_id). row_info is what _fleet_access_for_row() consumes."""
+        if only_machine in (None, "local"):
+            for pid, profile in self.config.get("server_profiles", {}).items():
+                running = pid in self.contexts and self.contexts[pid].is_running()
+                yield (f"floc:{pid}", "🖥 This computer", profile.get("name") or "Server",
+                       running, ("local", pid))
+        if only_machine != "local":
+            for machine in self.config.get("machines", []):
+                mid = machine.get("id")
+                if only_machine is not None and mid != only_machine:
+                    continue
+                st = self._remote_state.get(mid, {})
+                mlabel = f"🖥 {st.get('name') or machine.get('name', machine.get('host'))}"
+                if not st.get("connected"):
+                    yield (f"frem:{mid}:_", mlabel, "(not connected)", False, None)
+                    continue
+                for sv in st.get("servers", []):
+                    yield (f"frem:{mid}:{sv['id']}", mlabel, sv.get("name") or "Server",
+                           bool(sv.get("running")), ("remote", mid, sv["id"]))
+
+    def _build_server_list_tree(self, parent, show_machine_column: bool):
+        columns = ("machine", "server", "status") if show_machine_column else ("server", "status")
+        tree = ttk.Treeview(parent, columns=columns, show="headings", height=10)
+        if show_machine_column:
+            tree.heading("machine", text="Machine")
+            tree.column("machine", width=170)
+        tree.heading("server", text="Server")
+        tree.heading("status", text="Status")
+        tree.column("server", width=230)
+        tree.column("status", width=110, anchor="center")
+        tree.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        tree.bind("<Double-1>", self._fleet_row_double_click)
+        return tree
+
+    def build_fleet_overview(self):
+        for w in self.overview_frame.winfo_children():
+            w.destroy()
+        ttk.Label(self.overview_frame, text="🌐 Fleet — every Server, every Machine",
+                  font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+        ttk.Label(self.overview_frame, text="Double-click a row to open it; select + use the buttons to start/stop.",
+                  font=("TkDefaultFont", 8), foreground="gray").pack(anchor="w", pady=(0, 4))
+        tree = self._build_server_list_tree(self.overview_frame, show_machine_column=True)
+        self._fleet_tree = tree
+        self._fleet_rows = {}
+        for iid, mlabel, slabel, running, info in self._fleet_rows_for():
+            tree.insert("", tk.END, iid=iid, values=(mlabel, slabel, "🟢 Running" if running else "⚪ Stopped"))
+            if info:
+                self._fleet_rows[iid] = info
+        self._build_fleet_action_buttons(self.overview_frame)
+
+    def build_machine_page(self, kind: str, machine_id: str):
+        for w in self.overview_frame.winfo_children():
+            w.destroy()
+        header = ttk.Frame(self.overview_frame)
+        header.pack(fill=tk.X, pady=(0, 4))
+        if kind == "local":
+            title, subtitle = "🖥 This computer", f"{APP_NAME} v{APP_VERSION}   |   platform: {sys.platform}"
+        else:
+            machine = next((m for m in self.config.get("machines", []) if m["id"] == machine_id), None)
+            st = self._remote_state.get(machine_id, {})
+            conn = self.connections.get(machine_id)
+            connected = bool(conn and conn.is_connected())
+            title = f"🖥 {st.get('name') or (machine or {}).get('name', 'Machine')}"
+            bits = [f"{(machine or {}).get('host', '?')}:{(machine or {}).get('port', '?')}",
+                    "🟢 Connected" if connected else "🔴 Not connected"]
+            info = conn.machine_info if conn else {}
+            if info.get("platform"):
+                bits.append(f"platform: {info['platform']}")
+            if info.get("app_version"):
+                bits.append(f"v{info['app_version']}")
+            subtitle = "   |   ".join(bits)
+        ttk.Label(header, text=title, font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+        ttk.Label(header, text=subtitle, foreground="gray").pack(anchor="w")
+
+        tree = self._build_server_list_tree(self.overview_frame, show_machine_column=False)
+        self._fleet_tree = tree
+        self._fleet_rows = {}
+        for iid, _mlabel, slabel, running, info in self._fleet_rows_for(only_machine=machine_id):
+            tree.insert("", tk.END, iid=iid, values=(slabel, "🟢 Running" if running else "⚪ Stopped"))
+            if info:
+                self._fleet_rows[iid] = info
+        self._build_fleet_action_buttons(self.overview_frame, machine_id=(machine_id if kind == "remote" else None))
+
+    def _build_fleet_action_buttons(self, parent, machine_id=None):
+        btns = ttk.Frame(parent)
+        btns.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(btns, text="▶️ Start Selected", command=self.fleet_start_selected).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btns, text="⏹️ Stop Selected", command=self.fleet_stop_selected).pack(side=tk.LEFT, padx=3)
+        if machine_id is not None:
+            ttk.Button(btns, text="🔌 Remove Machine",
+                       command=lambda: self.remove_machine_confirm(machine_id)).pack(side=tk.RIGHT, padx=3)
+        ttk.Button(btns, text="🔄 Refresh", command=lambda: self.refresh_sidebar()).pack(side=tk.RIGHT, padx=3)
+
+    def _fleet_access_for_row(self, iid):
+        """Returns (access_object_or_None, display_name) for a fleet/machine-page row."""
+        info = self._fleet_rows.get(iid)
+        if not info:
+            return None, None
+        if info[0] == "local":
+            pid = info[1]
+            profile = self.config.get("server_profiles", {}).get(pid, {})
+            ctx = self.contexts.get(pid)
+            if ctx is None and profile.get("path") and Path(profile["path"]).exists():
+                ctx = self._build_context(pid, Path(profile["path"]))
+                self.contexts[pid] = ctx
+            return ctx, profile.get("name", "Server")
+        _, mid, sid = info
+        conn = self.connections.get(mid)
+        if conn is None or not conn.is_connected():
+            return None, None
+        name = next((sv.get("name") for sv in self._remote_state.get(mid, {}).get("servers", [])
+                    if sv.get("id") == sid), "Server")
+        return RemoteServerAccess(conn, sid), name
+
+    def _fleet_row_double_click(self, event=None):
+        tree = self._fleet_tree
+        sel = tree.selection()
+        if not sel:
+            return
+        info = self._fleet_rows.get(sel[0])
+        if not info:
+            return
+        if info[0] == "local":
+            self.sidebar_tree.selection_set(f"profile:{info[1]}")
+        else:
+            self.sidebar_tree.selection_set(f"rprofile:{info[1]}:{info[2]}")
+
+    def _fleet_selected_access(self):
+        sel = self._fleet_tree.selection()
+        if not sel:
+            messagebox.showwarning("Fleet", "Select a Server first.")
+            return None, None
+        acc, name = self._fleet_access_for_row(sel[0])
+        if acc is None:
+            messagebox.showwarning("Fleet", "That Server isn't reachable right now.")
+        return acc, name
+
+    def fleet_start_selected(self):
+        acc, name = self._fleet_selected_access()
+        if acc is None or acc.is_running():
+            return
+        if not messagebox.askyesno("Start Server", f"Start '{name}'?"):
+            return
+        def do(a=acc):
+            try:
+                a.start()
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Fleet", str(e)))
+            self.root.after(800, self.refresh_sidebar)
+        threading.Thread(target=do, daemon=True).start()
+
+    def fleet_stop_selected(self):
+        acc, name = self._fleet_selected_access()
+        if acc is None or not acc.is_running():
+            return
+        if not messagebox.askyesno("Stop Server", f"Stop '{name}'?"):
+            return
+        def do(a=acc):
+            try:
+                a.stop()
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Fleet", str(e)))
+            self.root.after(800, self.refresh_sidebar)
+        threading.Thread(target=do, daemon=True).start()
+
+    def remove_machine_confirm(self, machine_id: str):
+        machine = next((m for m in self.config.get("machines", []) if m["id"] == machine_id), None)
+        name = (machine or {}).get("name", machine_id)
+        if not messagebox.askyesno("Remove Machine",
+                f"Remove '{name}'?\n\nThis only removes it from this administrator -- "
+                "the Machine itself and its Servers are unaffected."):
+            return
+        if self.active_remote and self.active_remote[0] == machine_id:
+            self.active_access = None
+            self.active_remote = None
+        self._stop_connection(machine_id)
+        self.remove_machine(machine_id)
+        self._overview_kind = ("fleet",)
+        self.build_fleet_overview()
+        self.refresh_sidebar()
 
     def setup_main_tab(self):
         self.main_tab.columnconfigure(0, weight=1)
