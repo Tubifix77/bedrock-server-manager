@@ -1144,6 +1144,348 @@ class FramedConnection:
 
 
 # ============================================================================
+# REMOTE ADMINISTRATION — HOST SERVICE
+# ============================================================================
+#
+# Serves a Machine's Servers to authenticated administrators over the LAN. Runs
+# inside the GUI process (Settings toggle) or as the whole process (--agent).
+#
+# Threading model (the part most prone to subtle bugs, so it's kept rigid):
+#   * one accept thread, polling a 1s socket timeout so stop() is responsive;
+#   * per connection, a READER thread and a WRITER thread with a Queue between
+#     them — the writer is the ONLY thing that ever writes that socket, so
+#     event pushes (from ServerManager reader threads) and op responses can't
+#     interleave on the wire;
+#   * long ops (stop/restart/backup/restore) run in their own worker thread so
+#     they don't block the reader from handling more requests;
+#   * mutating process ops are serialized by ServerService._op_lock.
+# Events fan out to every authed client; console bursts are coalesced by the
+# writer. A dead/sleeping peer is caught by SO_KEEPALIVE plus the read timeout.
+
+# Ops that can block long enough to deserve their own worker thread.
+_ASYNC_OPS = {"stop", "restart", "create_backup", "restore_backup"}
+
+
+class RemoteAdminHost:
+    def __init__(self, provider, port: int = REMOTE_DEFAULT_PORT, log=None):
+        # provider must supply: remote_token(), remote_service(id),
+        # remote_server_list(), remote_machine_info(). Both BedrockUpdaterApp
+        # and the headless AgentApp implement these.
+        self.provider = provider
+        self.port = port
+        self.log = log or (lambda msg: None)
+        self._server_sock = None
+        self._accept_thread = None
+        self._running = False
+        self._clients = set()
+        self._clients_lock = threading.Lock()
+        self._wired = set()
+        self._wire_lock = threading.Lock()
+
+    def is_running(self) -> bool:
+        return self._running
+
+    def start(self):
+        if self._running:
+            return
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", self.port))
+        except OSError as e:
+            sock.close()
+            raise RuntimeError(f"Could not listen on port {self.port}: {e}")
+        sock.listen(8)
+        sock.settimeout(1.0)
+        self._server_sock = sock
+        self._running = True
+        self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._accept_thread.start()
+        self.log(f"Remote administration listening on port {self.port}")
+
+    def stop(self):
+        self._running = False
+        if self._server_sock:
+            try:
+                self._server_sock.close()
+            except Exception:
+                pass
+            self._server_sock = None
+        with self._clients_lock:
+            clients = list(self._clients)
+        for c in clients:
+            c.close()
+        self.log("Remote administration stopped")
+
+    def _accept_loop(self):
+        while self._running:
+            try:
+                conn_sock, addr = self._server_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                conn_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            except Exception:
+                pass
+            _ClientConn(self, conn_sock, addr).start()
+
+    # --- client set ------------------------------------------------------
+    def _add_client(self, c):
+        with self._clients_lock:
+            self._clients.add(c)
+
+    def _remove_client(self, c):
+        with self._clients_lock:
+            self._clients.discard(c)
+
+    def _broadcast(self, message: dict):
+        with self._clients_lock:
+            clients = list(self._clients)
+        for c in clients:
+            c.enqueue(message)
+
+    # --- event wiring (once per Server) ----------------------------------
+    def _wire_service(self, profile_id: str, service):
+        with self._wire_lock:
+            if profile_id in self._wired:
+                return
+            self._wired.add(profile_id)
+        service.server_manager.add_output_callback(
+            lambda line, pid=profile_id: self._broadcast(
+                {"type": "event", "event": "console", "server": pid, "data": {"lines": [line]}}))
+        service.server_manager.add_status_callback(
+            lambda status, pid=profile_id: self._on_service_status(pid, status))
+
+    def _on_service_status(self, profile_id: str, status: str):
+        self._broadcast({"type": "event", "event": "status", "server": profile_id,
+                         "data": {"running": status == "running"}})
+        self._broadcast({"type": "event", "event": "servers_changed",
+                         "data": {"servers": self.provider.remote_server_list()}})
+
+    # --- op dispatch (called from a client's reader/worker thread) -------
+    def dispatch_op(self, op: str, server_id, params: dict, client) -> dict:
+        if op == "list_servers":
+            return {"servers": self.provider.remote_server_list()}
+        if op == "machine_info":
+            return self.provider.remote_machine_info()
+
+        service = self.provider.remote_service(server_id) if server_id else None
+        if service is None:
+            raise ValueError(f"unknown server: {server_id!r}")
+        self._wire_service(server_id, service)
+
+        if op == "get_info":
+            return service.get_info()
+        if op == "list_worlds":
+            return {"worlds": service.list_worlds()}
+        if op == "read_properties":
+            return {"properties": service.read_properties()}
+        if op == "read_gamerules":
+            return {"gamerules": service.read_gamerules()}
+        if op == "get_players":
+            return service.get_players()
+        if op == "console_snapshot":
+            return {"lines": service.console_snapshot()}
+        if op == "start":
+            return {"started": service.start()}
+        if op == "stop":
+            return {"stopped": service.stop()}
+        if op == "restart":
+            return {"restarted": service.restart()}
+        if op == "send_command":
+            service.send_command(params["command"])
+            return {}
+        if op == "set_active_world":
+            return {"ok": service.set_active_world(params["name"])}
+        if op == "write_properties":
+            return {"ok": service.write_properties(params["properties"])}
+        if op == "set_allowlist_enforcement":
+            return {"ok": service.set_allowlist_enforcement(bool(params["enable"]))}
+        if op == "add_allowlist_player":
+            service.add_allowlist_player(params["name"], params.get("xuid"))
+            return {}
+        if op == "remove_allowlist_player":
+            service.remove_allowlist_player(params["name"])
+            return {}
+        if op == "set_permission":
+            service.set_permission(params["xuid"], params["level"])
+            return {}
+        if op == "remove_permission":
+            service.remove_permission(params["xuid"])
+            return {}
+        if op == "send_gamerule":
+            service.send_gamerule(params["rule"], params["value"])
+            return {}
+        if op == "set_gamemode":
+            service.set_gamemode(params["name"], params["mode"])
+            return {}
+        if op == "list_backups":
+            return {"backups": service.list_backups()}
+        if op == "delete_backup":
+            return {"ok": service.delete_backup(params["path"])}
+        if op == "create_backup":
+            preserve = params.get("preserve")
+            if preserve is None:
+                raise ValueError("create_backup requires a 'preserve' list")
+            ok, path, backed = service.create_backup(
+                preserve, compress=bool(params.get("compress", False)),
+                progress_callback=lambda pct: self._broadcast(
+                    {"type": "event", "event": "progress", "server": server_id,
+                     "data": {"op": "backup", "percent": pct}}))
+            return {"ok": ok, "path": str(path), "backed_up": backed}
+        if op == "restore_backup":
+            ok, restored = service.restore_backup(
+                params["path"],
+                progress_callback=lambda pct: self._broadcast(
+                    {"type": "event", "event": "progress", "server": server_id,
+                     "data": {"op": "restore", "percent": pct}}))
+            return {"ok": ok, "restored": restored}
+        raise ValueError(f"unknown op: {op!r}")
+
+
+class _ClientConn:
+    """One administrator connection: handshake, then a reader thread + a writer
+    thread joined by an outbound queue (the writer is the sole socket writer)."""
+
+    def __init__(self, host: RemoteAdminHost, sock: socket.socket, addr):
+        self.host = host
+        self.addr = addr
+        self.sock = sock
+        self.conn = FramedConnection(sock)
+        self._out = queue.Queue()
+        self._alive = True
+
+    def start(self):
+        threading.Thread(target=self._read_loop, daemon=True).start()
+        threading.Thread(target=self._write_loop, daemon=True).start()
+
+    def enqueue(self, message: dict):
+        if self._alive:
+            self._out.put(message)
+
+    def close(self):
+        if not self._alive:
+            return
+        self._alive = False
+        self._out.put(None)  # wake the writer so it can exit
+        self.conn.close()
+
+    def _read_loop(self):
+        added = False
+        try:
+            if not self._handshake():
+                return
+            self.host._add_client(self)
+            added = True
+            # snapshot of the fleet on connect
+            self.enqueue({"type": "event", "event": "servers_changed",
+                          "data": {"servers": self.host.provider.remote_server_list()}})
+            self.sock.settimeout(1.0)
+            while self.host._running and self._alive:
+                try:
+                    msg = self.conn.recv_message()
+                except socket.timeout:
+                    continue
+                except (ProtocolError, OSError):
+                    break
+                if msg is None:
+                    break
+                self._dispatch(msg)
+        except Exception:
+            # Any failure on this connection (incl. the socket being closed out
+            # from under us during host.stop()) just tears it down quietly --
+            # a per-connection thread must never spew an unhandled traceback.
+            pass
+        finally:
+            self.close()
+            if added:
+                self.host._remove_client(self)
+
+    def _write_loop(self):
+        try:
+            while self._alive:
+                item = self._out.get()
+                if item is None:
+                    break
+                batch = [item]
+                try:
+                    while True:
+                        batch.append(self._out.get_nowait())
+                except queue.Empty:
+                    pass
+                for out_msg in self._coalesce(batch):
+                    if out_msg is None:
+                        return
+                    try:
+                        self.conn.send_message(out_msg)
+                    except OSError:
+                        return
+        finally:
+            self._alive = False
+
+    @staticmethod
+    def _coalesce(items):
+        """Merge consecutive console events for the same Server into one message
+        so a burst of BDS output becomes a few frames, not hundreds."""
+        merged = []
+        for m in items:
+            if (m is not None and m.get("event") == "console" and merged
+                    and isinstance(merged[-1], dict)
+                    and merged[-1].get("event") == "console"
+                    and merged[-1].get("server") == m.get("server")):
+                merged[-1]["data"]["lines"].extend(m["data"]["lines"])
+            else:
+                merged.append(m)
+        return merged
+
+    def _handshake(self) -> bool:
+        self.sock.settimeout(10.0)
+        try:
+            hello = self.conn.recv_message()
+            if not hello or hello.get("type") != "hello":
+                return False
+            if hello.get("proto") != REMOTE_PROTO_VERSION:
+                self.conn.send_message({"type": "error", "error": "unsupported protocol version"})
+                return False
+            nonce = secrets.token_hex(16)
+            self.conn.send_message({"type": "challenge", "nonce": nonce})
+            auth = self.conn.recv_message()
+            token = self.host.provider.remote_token()
+            if not auth or auth.get("type") != "auth" or not verify_auth(token, nonce, auth.get("response")):
+                time.sleep(1.0)  # throttle brute-forcing the token
+                try:
+                    self.conn.send_message({"type": "error", "error": "authentication failed"})
+                except Exception:
+                    pass
+                return False
+            self.conn.send_message({"type": "ok", "machine": self.host.provider.remote_machine_info()})
+            return True
+        except (socket.timeout, ProtocolError, OSError):
+            return False
+
+    def _dispatch(self, msg: dict):
+        if msg.get("type") != "req":
+            return
+        req_id = msg.get("id")
+        op = msg.get("op")
+        params = msg.get("params") or {}
+        server_id = msg.get("server")
+        if op in _ASYNC_OPS:
+            threading.Thread(target=self._run_op, args=(req_id, op, server_id, params), daemon=True).start()
+        else:
+            self._run_op(req_id, op, server_id, params)
+
+    def _run_op(self, req_id, op, server_id, params):
+        try:
+            result = self.host.dispatch_op(op, server_id, params, self)
+            self.enqueue({"type": "resp", "id": req_id, "ok": True, "result": result})
+        except Exception as e:
+            self.enqueue({"type": "resp", "id": req_id, "ok": False, "error": str(e)})
+
+
+# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 
@@ -2396,6 +2738,29 @@ class BedrockUpdaterApp:
         ctx = self._build_context(profile_id, path)
         self.contexts[profile_id] = ctx
         return ctx
+
+    # --- Remote-admin host provider interface (see RemoteAdminHost) -------
+    def remote_token(self) -> str:
+        ra = self.config.setdefault("remote_admin", {"enabled": False, "port": REMOTE_DEFAULT_PORT, "token": ""})
+        if not ra.get("token"):
+            ra["token"] = generate_pairing_token()
+            save_config(self.config)
+        return ra["token"]
+
+    def remote_service(self, profile_id):
+        return self._ensure_service(profile_id)
+
+    def remote_server_list(self) -> List[dict]:
+        out = []
+        for pid, profile in self.config.get("server_profiles", {}).items():
+            svc = self.contexts.get(pid)
+            out.append({"id": pid, "name": profile.get("name", "Server"),
+                        "running": svc.is_running() if svc else False})
+        return out
+
+    def remote_machine_info(self) -> dict:
+        return {"name": socket.gethostname(), "platform": sys.platform,
+                "app_version": APP_VERSION, "servers": self.remote_server_list()}
 
     def initialize_managers(self):
         # Ensures active_profile exists (creating it on the very first Server
