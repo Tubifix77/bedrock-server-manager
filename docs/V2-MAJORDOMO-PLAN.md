@@ -11,6 +11,26 @@
 > the final docs commit. `master`/`main` and the family's live 1.0.4 laptop were never
 > touched — every bit of verification ran against scratch configs and loopback hosts.
 >
+> **SYSTEM TEST (2026-07-14, Fable 5) — PASSED.** Full system/integration/exploratory pass
+> against TWO real BDS 1.26.33.1 installs on the dev PC (short path `C:\bstest`, test ports
+> 19232-19235; family ports 19132/19133 never used). Phases: P1 real rigs + world gen; P2 local
+> real-engine lifecycle (start/console/commands/gamerules/port-guard/simultaneous/update
+> pipeline/backup+restore/on_close) — 27 checks; P3 migration of the family laptop's REAL v1.0.4
+> config (read read-only over ssh) — 9 checks, everything intact incl. 3 real players + custom
+> preserve list; P4 two-process integration — a real `--agent` subprocess driven by a real GUI
+> admin over TCP running real engines — 15 checks incl. remote start/console/command/config-
+> save/backup/stop, agent-kill→auto-reconnect, wrong-token refusal; P5 exploratory — UTF-8
+> stdio, multi-admin fan-out, console-burst integrity, rapid start/stop cycling.
+> **Three real bugs found and fixed** (all committed): (1) `2b97d68` NameError on every error
+> path (deferred `after` lambda referenced the freed `except ... as e`); (2) `6987189` dead
+> `start_minimized_to_tray` key + doc overclaim; (3) `ce96414` engine stdio used the Windows
+> locale (cp1252) not UTF-8 — garbled Danish and could kill the console reader on emoji.
+> **Two items flagged, deliberately NOT fixed here:** Windows MAX_PATH on backup/restore of the
+> deep stock `resource_packs` tree under long install paths (pre-existing, Linux-unaffected —
+> task chip spawned); and `--agent` does not stop its running engines on shutdown (defensible
+> for a long-running host service; the GUI host stops them via on_close). Test rigs removed;
+> the downloaded zip sits in the session scratchpad.
+>
 > **The code is done. What's left is entirely the user's call, not more building:**
 > 1. A real loopback test on the dev PC (two real BDS installs, not stubs) — recommended before
 >    trusting this on the family's laptop.
