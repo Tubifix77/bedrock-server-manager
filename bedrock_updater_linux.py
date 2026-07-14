@@ -13,6 +13,10 @@ import uuid
 import shutil
 import zipfile
 import hashlib
+import hmac
+import secrets
+import queue
+import argparse
 import threading
 import subprocess
 import socket
@@ -789,6 +793,108 @@ class ServerManager:
             finally:
                 self._running = False
                 self._notify_status("stopped")
+
+
+# ============================================================================
+# REMOTE ADMINISTRATION — WIRE PROTOCOL & AUTH
+# ============================================================================
+#
+# LAN-only administration protocol (see docs/V2-MAJORDOMO-PLAN.md sections 2-3).
+# One TCP connection per Machine, framed as JSON Lines: each message is a single
+# json.dumps() object (ensure_ascii=True by default, so the payload is pure ASCII
+# and can never contain a raw newline) terminated by b"\n".
+#
+# Security is honest LAN-grade: a high-entropy pairing token authenticates the
+# client via an HMAC challenge (the token itself never crosses the wire), but the
+# session is plaintext. Not internet-safe — documented as "don't port-forward this".
+
+REMOTE_PROTO_VERSION = 1
+REMOTE_DEFAULT_PORT = 19190
+# Guard against a peer sending an unbounded line and exhausting memory. Backups/
+# world lists are the largest legitimate payloads and stay well under this.
+MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+# Unambiguous alphabet for the pairing token (no 0/O/1/I/l to avoid mis-typing).
+_TOKEN_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+class ProtocolError(Exception):
+    """A malformed or oversized message on the wire."""
+
+
+def generate_pairing_token() -> str:
+    """A high-entropy, human-copyable token shown on the host as XXXX-XXXX-XXXX."""
+    groups = ["".join(secrets.choice(_TOKEN_ALPHABET) for _ in range(4)) for _ in range(3)]
+    return "-".join(groups)
+
+
+def compute_auth(token: str, nonce: str) -> str:
+    """HMAC-SHA256 of the host's challenge nonce, keyed by the pairing token.
+
+    The client proves it knows the token without sending it; a fresh nonce per
+    connection stops trivial replay. (A MITM on the plaintext LAN link could
+    still hijack the live session — that's the accepted home-LAN threat model.)
+    """
+    return hmac.new(token.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_auth(token: str, nonce: str, response: str) -> bool:
+    """Constant-time comparison of a client's auth response."""
+    if not token or not isinstance(response, str):
+        return False
+    return hmac.compare_digest(compute_auth(token, nonce), response)
+
+
+class FramedConnection:
+    """JSON-Lines framing over a blocking socket.
+
+    send_message() is serialized by a lock so multiple threads (the response
+    writer and event pushers) can share one socket safely. recv_message()
+    buffers across recv() calls so a message split across TCP segments — or
+    several messages arriving in one segment — are handled correctly, and
+    caps a single line at MAX_MESSAGE_BYTES. A socket read timeout propagates
+    out as socket.timeout (buffer preserved), so callers can poll a stop flag.
+    """
+
+    def __init__(self, sock: socket.socket, max_message_bytes: int = MAX_MESSAGE_BYTES):
+        self.sock = sock
+        self.max_message_bytes = max_message_bytes
+        self._buf = bytearray()
+        self._send_lock = threading.Lock()
+
+    def send_message(self, obj: dict):
+        data = json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n"
+        with self._send_lock:
+            self.sock.sendall(data)
+
+    def recv_message(self) -> Optional[dict]:
+        """Next message as a dict, or None at clean EOF. Raises ProtocolError
+        on an oversized or unparseable line; may raise socket.timeout."""
+        while True:
+            nl = self._buf.find(b"\n")
+            if nl != -1:
+                line = bytes(self._buf[:nl])
+                del self._buf[:nl + 1]
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line.decode("utf-8"))
+                except Exception as e:
+                    raise ProtocolError(f"unparseable message: {e}")
+                if not isinstance(obj, dict):
+                    raise ProtocolError("message was not a JSON object")
+                return obj
+            if len(self._buf) > self.max_message_bytes:
+                raise ProtocolError("message exceeded size limit")
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                return None
+            self._buf.extend(chunk)
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
 
 
 # ============================================================================
