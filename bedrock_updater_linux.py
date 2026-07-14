@@ -924,9 +924,23 @@ class BedrockUpdaterApp:
         self.root.minsize(800, 600)
         self.set_window_icon()
 
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+        # Sidebar (Machines -> Servers) + the existing tabbed Notebook, side by
+        # side in a resizable pane. See docs/V2-MAJORDOMO-PLAN.md, "GUI: sidebar
+        # + the same 7 tabs" -- Stage 1 only ever has "This computer" as a
+        # Machine; remote Machines arrive in Stage 3.
+        self.main_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        self.main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        sidebar_frame = ttk.Frame(self.main_pane, width=200)
+        self.main_pane.add(sidebar_frame, weight=0)
+        self.setup_sidebar(sidebar_frame)
+
+        notebook_frame = ttk.Frame(self.main_pane)
+        self.main_pane.add(notebook_frame, weight=1)
+
+        self.notebook = ttk.Notebook(notebook_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
         # Tab order: daily use first — Server is the home tab.
         self.server_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.server_tab, text="🎮 Server")
@@ -965,7 +979,109 @@ class BedrockUpdaterApp:
         self.status_label.pack(side=tk.LEFT)
         self.server_status_label = ttk.Label(self.status_bar, text="⬤ Server: Not configured", foreground="gray")
         self.server_status_label.pack(side=tk.RIGHT)
-    
+
+    def setup_sidebar(self, parent):
+        ttk.Label(parent, text="🖥 This computer", font=("TkDefaultFont", 9, "bold")).pack(
+            anchor="w", padx=6, pady=(6, 2))
+        self.sidebar_tree = ttk.Treeview(parent, show="tree", height=15)
+        self.sidebar_tree.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
+        self.sidebar_tree.bind("<<TreeviewSelect>>", self.on_sidebar_select)
+        btns = ttk.Frame(parent)
+        btns.pack(fill=tk.X, padx=4, pady=(0, 6))
+        ttk.Button(btns, text="➕ Server", command=self.add_server_profile).pack(fill=tk.X)
+
+    def refresh_sidebar(self):
+        """Rebuild the Machines/Servers tree from config + live registry state."""
+        if not hasattr(self, 'sidebar_tree'):
+            return
+        self.sidebar_tree.delete(*self.sidebar_tree.get_children())
+        machine_node = self.sidebar_tree.insert("", tk.END, iid="machine:local",
+                                                 text="🖥 This computer", open=True)
+        active_id = self.config.get("active_profile")
+        for pid, profile in self.config.get("server_profiles", {}).items():
+            running = pid in self.contexts and self.contexts[pid]["server_manager"].is_running()
+            dot = "🟢" if running else "⚪"
+            self.sidebar_tree.insert(machine_node, tk.END, iid=f"profile:{pid}",
+                                      text=f"{dot} {profile.get('name') or 'Server'}")
+        if active_id:
+            try:
+                self.sidebar_tree.selection_set(f"profile:{active_id}")
+            except tk.TclError:
+                pass
+
+    def on_sidebar_select(self, event=None):
+        sel = self.sidebar_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        active_id = self.config.get("active_profile")
+        if not iid.startswith("profile:"):
+            # The Machine node itself -- no Machine/Fleet page yet (Stage 4);
+            # keep showing whichever Server is already active.
+            if active_id:
+                self.sidebar_tree.selection_set(f"profile:{active_id}")
+            return
+        new_id = iid.split(":", 1)[1]
+        if new_id == active_id:
+            return
+        if hasattr(self, 'properties_editor') and self.properties_editor.has_unsaved_changes():
+            if not messagebox.askyesno("Unsaved changes",
+                    "The Active Server Configuration has unsaved changes.\n\n"
+                    "Discard them and switch Servers?"):
+                if active_id:
+                    self.sidebar_tree.selection_set(f"profile:{active_id}")
+                return
+        self._switch_to_profile(new_id)
+
+    def _switch_to_profile(self, profile_id: str):
+        """Point every tab at a different Server. See docs/V2-MAJORDOMO-PLAN.md,
+        'GUI: sidebar + the same 7 tabs' -- a still-running previous Server is
+        NOT stopped; it keeps running in the registry, which is the point."""
+        self._sync_flat_settings_into_active_profile()
+        self.config["active_profile"] = profile_id
+        hydrate_active_profile_cache(self.config)
+        self.server_entry.delete(0, tk.END)
+        self.server_entry.insert(0, self.config.get("last_server_path", ""))
+        for item, var in self.preserve_vars.items():
+            if item in self.config["preserve_items"]:
+                var.set(self.config["preserve_items"][item].get("enabled", True))
+        if hasattr(self, 'max_backups_var'):
+            self.max_backups_var.set(self.config.get("max_backups", 5))
+            self.compress_var.set(self.config.get("compress_backups", False))
+            self.auto_cleanup_var.set(self.config.get("auto_cleanup_backups", True))
+            self.auto_stop_var.set(self.config.get("auto_stop_server_before_update", True))
+            self.auto_start_var.set(self.config.get("auto_start_server_after_update", False))
+        self.initialize_managers()
+        self.validate_inputs()
+        self.refresh_sidebar()
+
+    def add_server_profile(self):
+        """The sidebar's [+ Server]: adds a genuinely new, independent profile
+        (unlike Settings > Browse, which relocates the CURRENT Server)."""
+        folderpath = filedialog.askdirectory(initialdir=str(Path.home()), title="Select Bedrock Server Folder")
+        if not folderpath:
+            return
+        if hasattr(self, 'properties_editor') and self.properties_editor.has_unsaved_changes():
+            if not messagebox.askyesno("Unsaved changes",
+                    "The Active Server Configuration has unsaved changes.\n\n"
+                    "Discard them and add a new Server?"):
+                return
+        self._sync_flat_settings_into_active_profile()
+        profile_id = uuid.uuid4().hex[:8]
+        name = _peek_server_name(Path(folderpath)) or Path(folderpath).name or "Server"
+        self.config.setdefault("server_profiles", {})[profile_id] = {
+            "name": name,
+            "path": folderpath,
+            "preserve_items": copy.deepcopy(DEFAULT_PRESERVE_ITEMS),
+            "max_backups": 5,
+            "compress_backups": False,
+            "auto_cleanup_backups": True,
+            "auto_stop_server_before_update": True,
+            "auto_start_server_after_update": False,
+            "known_players": {},
+        }
+        self._switch_to_profile(profile_id)
+
     def setup_main_tab(self):
         self.main_tab.columnconfigure(0, weight=1)
         
@@ -1847,6 +1963,7 @@ class BedrockUpdaterApp:
             self.server_entry.insert(0, self.config["last_server_path"])
             self.initialize_managers()
         self.validate_inputs()
+        self.refresh_sidebar()
     
     def on_tab_changed(self, event=None):
         """Refresh the data behind a tab whenever the user opens it.
@@ -1920,6 +2037,17 @@ class BedrockUpdaterApp:
             return
         self.server_manager = ctx["server_manager"]
         self.backup_manager = ctx["backup_manager"]
+        # Force-sync the UI to this context's ACTUAL state -- it may already be
+        # running (we're switching back to it), and no status-change callback
+        # fires just from being reselected.
+        self.update_server_status("running" if self.server_manager.is_running() else "stopped")
+        if hasattr(self, 'console_text'):
+            self.console_text.config(state=tk.NORMAL)
+            self.console_text.delete(1.0, tk.END)
+            for line in ctx["console_buffer"]:
+                self.console_text.insert(tk.END, line + "\n")
+            self.console_text.see(tk.END)
+            self.console_text.config(state=tk.DISABLED)
         self.refresh_backups()
         self.refresh_worlds()
         self.refresh_world_combo()
@@ -1944,7 +2072,8 @@ class BedrockUpdaterApp:
             if hasattr(self, 'world_combo'):
                 self.world_combo.config(state="readonly")
                 self.world_hint_label.config(text="")
-    
+        self.refresh_sidebar()
+
     def update_network_info(self):
         server_path = self.server_entry.get()
         if server_path:
@@ -2591,7 +2720,16 @@ class ServerPropertiesEditor(ttk.Frame):
         super().__init__(parent, padding=10)
         self.app = app
         self.entries = {}
+        self._loaded_snapshot = {}
         self.setup_ui()
+
+    def has_unsaved_changes(self) -> bool:
+        """Used by the sidebar to guard against silently discarding edits when
+        switching Servers (see docs/V2-MAJORDOMO-PLAN.md, 'GUI: sidebar')."""
+        if not self.entries:
+            return False
+        current = {k: e.get() for k, e in self.entries.items()}
+        return current != self._loaded_snapshot
 
     def setup_ui(self):
         header = ttk.Frame(self)
@@ -2633,6 +2771,7 @@ class ServerPropertiesEditor(ttk.Frame):
                           font=("TkDefaultFont", 8), foreground="gray").grid(row=row_index, column=2, sticky="w", padx=5)
             self.entries[key] = entry
             row_index += 1
+        self._loaded_snapshot = {k: e.get() for k, e in self.entries.items()}
 
     def save_properties(self):
         server_path = self.app.server_entry.get()
@@ -2642,6 +2781,7 @@ class ServerPropertiesEditor(ttk.Frame):
         new_props = {key: entry.get() for key, entry in self.entries.items()}
         success = self.app.save_server_properties(Path(server_path) / "server.properties", new_props)
         if success:
+            self._loaded_snapshot = dict(new_props)
             self.app.log("Server properties saved successfully.", "success")
             messagebox.showinfo("Success", "Properties saved!")
         else:
