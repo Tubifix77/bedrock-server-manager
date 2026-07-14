@@ -8,6 +8,8 @@ Features: Update, backup, restore, run server, auto-cleanup, download updates, a
 import os
 import sys
 import json
+import copy
+import uuid
 import shutil
 import zipfile
 import hashlib
@@ -53,8 +55,14 @@ DEFAULT_PRESERVE_ITEMS = {
     "config": {"enabled": True, "description": "Additional config folder"},
 }
 
+# Config schema version. v2 ("Majordomo") introduces server_profiles — see
+# docs/V2-MAJORDOMO-PLAN.md. migrate_config_to_v2() upgrades an old flat
+# config the first time it's loaded.
+CONFIG_VERSION = 2
+
 # Default settings
 DEFAULT_SETTINGS = {
+    "config_version": CONFIG_VERSION,
     "last_zip_path": "",
     "last_server_path": "",
     "preserve_items": DEFAULT_PRESERVE_ITEMS,
@@ -69,11 +77,92 @@ DEFAULT_SETTINGS = {
     "window_geometry": "900x700",
     "check_updates_on_start": True,
     "server_profiles": {},
-    "active_profile": "default",
+    "active_profile": None,
+    "machines": [],
+    "remote_admin": {"enabled": False, "port": 19190, "token": ""},
     "console_font_size": 9,
     "console_max_lines": 1000,
     "known_players": {},
 }
+
+def _peek_server_name(server_path: Path) -> Optional[str]:
+    """Quick, migration-only read of server-name (no app instance needed)."""
+    props_file = server_path / "server.properties"
+    if not props_file.exists():
+        return None
+    try:
+        for line in props_file.read_text(errors="ignore").splitlines():
+            line = line.strip()
+            if line.startswith("server-name="):
+                return line.split("=", 1)[1].strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def migrate_config_to_v2(config: dict) -> dict:
+    """Upgrade a 1.x flat config to v2's server_profiles model.
+
+    Only called when the saved file predates config_version 2. Builds one
+    profile from the old single-Server flat keys, then drops those keys —
+    hydrate_active_profile_cache() repopulates them every load from the
+    profile, so nothing else has to change for Stage 1 (see
+    docs/V2-MAJORDOMO-PLAN.md, "Config v2 & migration").
+    """
+    last_path = (config.get("last_server_path") or "").strip()
+    profiles = {}
+    active_id = None
+    if last_path:
+        profile_id = uuid.uuid4().hex[:8]
+        name = _peek_server_name(Path(last_path)) or Path(last_path).name or "Server"
+        profiles[profile_id] = {
+            "name": name,
+            "path": last_path,
+            "preserve_items": copy.deepcopy(config.get("preserve_items") or DEFAULT_PRESERVE_ITEMS),
+            "max_backups": config.get("max_backups", 5),
+            "compress_backups": config.get("compress_backups", False),
+            "auto_cleanup_backups": config.get("auto_cleanup_backups", True),
+            "auto_stop_server_before_update": config.get("auto_stop_server_before_update", True),
+            "auto_start_server_after_update": config.get("auto_start_server_after_update", False),
+            "known_players": copy.deepcopy(config.get("known_players") or {}),
+        }
+        active_id = profile_id
+    for key in ("last_server_path", "preserve_items", "max_backups", "compress_backups",
+                "auto_cleanup_backups", "auto_stop_server_before_update",
+                "auto_start_server_after_update", "known_players"):
+        config.pop(key, None)
+    config["config_version"] = CONFIG_VERSION
+    config["server_profiles"] = profiles
+    config["active_profile"] = active_id
+    return config
+
+
+def hydrate_active_profile_cache(config: dict) -> dict:
+    """Populate the flat 'current profile' keys from the active profile.
+
+    Stage 1 still has exactly one selected Server; the flat keys
+    (last_server_path, preserve_items, known_players, max_backups, ...) are
+    its working cache, read by the existing widgets/methods unchanged.
+    preserve_items/known_players are aliased (same dict object as the
+    profile's) so in-session edits need no extra sync; scalars are re-synced
+    into the profile at save time by
+    BedrockUpdaterApp._sync_flat_settings_into_active_profile().
+    """
+    profile_id = config.get("active_profile")
+    profiles = config.get("server_profiles") or {}
+    profile = profiles.get(profile_id) if profile_id else None
+    if not profile:
+        config["last_server_path"] = ""
+        return config
+    config["last_server_path"] = profile.get("path", "")
+    config["preserve_items"] = profile.setdefault("preserve_items", copy.deepcopy(DEFAULT_PRESERVE_ITEMS))
+    config["known_players"] = profile.setdefault("known_players", {})
+    for key, default in (("max_backups", 5), ("compress_backups", False),
+                          ("auto_cleanup_backups", True),
+                          ("auto_stop_server_before_update", True),
+                          ("auto_start_server_after_update", False)):
+        config[key] = profile.get(key, default)
+    return config
 
 # Gamerules surfaced in the Gamerules dialog (they live per-World, set via the
 # `gamerule` console command — NOT in server.properties).
@@ -123,20 +212,31 @@ def get_log_dir() -> Path:
 
 def load_config() -> dict:
     config_path = get_config_path()
-    config = DEFAULT_SETTINGS.copy()
+    config = copy.deepcopy(DEFAULT_SETTINGS)
+    raw_saved = None
     try:
         if config_path.exists():
             with open(config_path, 'r') as f:
-                saved = json.load(f)
-                for key, value in saved.items():
-                    if key in config:
-                        if isinstance(config[key], dict) and isinstance(value, dict):
-                            config[key].update(value)
-                        else:
-                            config[key] = value
+                raw_saved = json.load(f)
+            for key, value in raw_saved.items():
+                if key in config:
+                    if isinstance(config[key], dict) and isinstance(value, dict):
+                        config[key].update(value)
+                    else:
+                        config[key] = value
     except Exception:
         pass
-    return config
+    was_v1 = raw_saved is not None and raw_saved.get("config_version", 1) < 2
+    if was_v1:
+        config = migrate_config_to_v2(config)
+        try:
+            bak_path = config_path.parent / (config_path.name + ".v1.bak")
+            if not bak_path.exists():
+                with open(bak_path, 'w') as f:
+                    json.dump(raw_saved, f, indent=2)
+        except Exception:
+            pass
+    return hydrate_active_profile_cache(config)
 
 def save_config(config: dict):
     try:
@@ -1800,6 +1900,38 @@ class BedrockUpdaterApp:
             ip = get_local_ip()
             self.network_label.config(text=f"Network: {ip}:{port}")
     
+    def _sync_flat_settings_into_active_profile(self):
+        """Mirror the flat 'current profile' keys into server_profiles[active_profile].
+
+        Stage 1 (see docs/V2-MAJORDOMO-PLAN.md): there is exactly one selected
+        Server, and the flat keys are its working cache. preserve_items and
+        known_players are the same dict object as the profile's copy (aliased
+        in hydrate_active_profile_cache), so only the scalar settings need
+        copying back here before a save. Creates the profile lazily the first
+        time a Server Folder is set (no profile exists yet).
+        """
+        server_path = self.server_entry.get().strip()
+        profile_id = self.config.get("active_profile")
+        profiles = self.config.setdefault("server_profiles", {})
+        profile = profiles.get(profile_id) if profile_id else None
+        if profile is None:
+            if not server_path:
+                return
+            profile_id = uuid.uuid4().hex[:8]
+            name = _peek_server_name(Path(server_path)) or Path(server_path).name or "Server"
+            profile = {
+                "name": name,
+                "preserve_items": self.config.get("preserve_items", {}),
+                "known_players": self.config.get("known_players", {}),
+            }
+            profiles[profile_id] = profile
+            self.config["active_profile"] = profile_id
+        profile["path"] = server_path
+        for key in ("max_backups", "compress_backups", "auto_cleanup_backups",
+                    "auto_stop_server_before_update", "auto_start_server_after_update"):
+            if key in self.config:
+                profile[key] = self.config[key]
+
     def on_close(self):
         if self.server_manager and self.server_manager.is_running():
             if not messagebox.askyesno("Server Running", "The server is still running. Stop it and exit?"):
@@ -1811,6 +1943,7 @@ class BedrockUpdaterApp:
         for item, var in self.preserve_vars.items():
             if item in self.config["preserve_items"]:
                 self.config["preserve_items"][item]["enabled"] = var.get()
+        self._sync_flat_settings_into_active_profile()
         save_config(self.config)
         self.root.destroy()
     
@@ -2268,13 +2401,14 @@ class BedrockUpdaterApp:
         self.config["check_updates_on_start"] = self.check_updates_var.get()
         self.config["console_font_size"] = self.font_size_var.get()
         self.config["show_notifications"] = self.notifications_var.get()
+        self._sync_flat_settings_into_active_profile()
         save_config(self.config)
         self.log("Settings saved", "success")
         messagebox.showinfo("Settings", "Settings saved successfully!")
     
     def reset_settings(self):
         if messagebox.askyesno("Reset", "Reset all settings to defaults?"):
-            self.config = DEFAULT_SETTINGS.copy()
+            self.config = copy.deepcopy(DEFAULT_SETTINGS)
             save_config(self.config)
             self.log("Settings reset to defaults", "info")
             messagebox.showinfo("Reset", "Settings reset. Restart the app to apply all changes.")
