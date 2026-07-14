@@ -21,15 +21,17 @@
 > admin over TCP running real engines — 15 checks incl. remote start/console/command/config-
 > save/backup/stop, agent-kill→auto-reconnect, wrong-token refusal; P5 exploratory — UTF-8
 > stdio, multi-admin fan-out, console-burst integrity, rapid start/stop cycling.
-> **Three real bugs found and fixed** (all committed): (1) `2b97d68` NameError on every error
+> **Four real bugs found and fixed** (all committed): (1) `2b97d68` NameError on every error
 > path (deferred `after` lambda referenced the freed `except ... as e`); (2) `6987189` dead
 > `start_minimized_to_tray` key + doc overclaim; (3) `ce96414` engine stdio used the Windows
-> locale (cp1252) not UTF-8 — garbled Danish and could kill the console reader on emoji.
-> **Two items flagged, deliberately NOT fixed here:** Windows MAX_PATH on backup/restore of the
-> deep stock `resource_packs` tree under long install paths (pre-existing, Linux-unaffected —
-> task chip spawned); and `--agent` does not stop its running engines on shutdown (defensible
-> for a long-running host service; the GUI host stops them via on_close). Test rigs removed;
-> the downloaded zip sits in the session scratchpad.
+> locale (cp1252) not UTF-8 — garbled Danish and could kill the console reader on emoji;
+> (4) `f8fb578` Windows MAX_PATH — backup/restore of the deep stock `resource_packs` tree
+> failed under long install paths; fixed with `\\?\` extended-length paths (`_long_path`),
+> verified round-tripping 382 files on a 290-char base (deepest ~370 chars). Pre-existing (1.x),
+> Linux-unaffected.
+> **One item flagged, deliberately NOT changed:** `--agent` does not stop its running engines
+> on shutdown (defensible for a long-running host service; the GUI host stops them via
+> on_close). Test rigs removed; the downloaded zip sits in the session scratchpad.
 >
 > **The code is done. What's left is entirely the user's call, not more building:**
 > 1. A real loopback test on the dev PC (two real BDS installs, not stubs) — recommended before
