@@ -959,6 +959,23 @@ class ServerService:
         active = self.get_active_world()
         return read_world_gamerules(self.server_path / "worlds" / active)
 
+    def rename_world(self, old_name: str, new_name: str) -> bool:
+        old_dir = self.server_path / "worlds" / old_name
+        new_dir = self.server_path / "worlds" / new_name
+        if not old_dir.exists() or new_dir.exists():
+            return False
+        old_dir.rename(new_dir)
+        if self.get_active_world() == old_name:
+            self.set_active_world(new_name)
+        return True
+
+    def delete_world(self, name: str) -> bool:
+        world_dir = self.server_path / "worlds" / name
+        if not world_dir.exists():
+            return False
+        shutil.rmtree(world_dir)
+        return True
+
     # --- player JSON helpers (allowlist.json / permissions.json) ---------
     def _load_player_json(self, filename: str) -> list:
         p = self.server_path / filename
@@ -1362,6 +1379,10 @@ class RemoteAdminHost:
             return {}
         if op == "set_active_world":
             return {"ok": service.set_active_world(params["name"])}
+        if op == "rename_world":
+            return {"ok": service.rename_world(params["old_name"], params["new_name"])}
+        if op == "delete_world":
+            return {"ok": service.delete_world(params["name"])}
         if op == "write_properties":
             return {"ok": service.write_properties(params["properties"])}
         if op == "set_allowlist_enforcement":
@@ -1833,6 +1854,12 @@ class RemoteServerAccess:
 
     def set_active_world(self, name: str) -> bool:
         return bool(self._req("set_active_world", name=name).get("ok", False))
+
+    def rename_world(self, old_name: str, new_name: str) -> bool:
+        return bool(self._req("rename_world", old_name=old_name, new_name=new_name).get("ok", False))
+
+    def delete_world(self, name: str) -> bool:
+        return bool(self._req("delete_world", name=name).get("ok", False))
 
     def set_allowlist_enforcement(self, enable: bool) -> bool:
         return bool(self._req("set_allowlist_enforcement", enable=enable).get("ok", False))
@@ -2391,15 +2418,19 @@ class BedrockUpdaterApp:
         return self.active_access
 
     def _block_if_remote(self, what: str = "This action") -> bool:
-        """Guard for the few actions that are inherently local-machine (opening
-        folders on disk, backup cleanup, world rename/delete, running an update).
+        """Guard for actions that are either physically local (opening a folder
+        on disk) or deliberately kept local-only for safety: running an Update
+        wipes and replaces the entire Server install, and doing that blind over
+        a network link -- where a dropped connection mid-copy could leave a
+        Server half-wiped with no one there to notice -- is a risk not worth
+        taking. See docs/V2-MAJORDOMO-PLAN.md, 'Deferred (deliberately local)'.
         Returns True (and tells the user) when a remote Server is selected."""
         if self.active_remote:
             messagebox.showinfo("Local-only",
                 f"{what} runs on the machine that hosts the Server, so it isn't available "
                 "from here for a remote Server.\n\nDo it on that machine directly. Status, "
-                "console, start/stop, commands, worlds, players, configuration and backups "
-                "all work remotely.")
+                "console, start/stop, commands, worlds (incl. rename/delete), players, "
+                "configuration and backups all work remotely.")
             return True
         return False
 
@@ -3040,17 +3071,15 @@ class BedrockUpdaterApp:
                 self.properties_editor.load_properties()
 
     def rename_selected_world(self):
-        if self._block_if_remote("Renaming a World"):
+        acc = self.active_access
+        if acc is None:
             return
         selected = self.world_tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "No World selected.")
             return
         old_name = str(self.world_tree.item(selected[0])["values"][0])
-        server_path = self.server_entry.get()
-        if not server_path:
-            return
-        if self.active_access and self.active_access.is_running():
+        if acc.is_running():
             messagebox.showwarning("Server Running", "Stop the Server before renaming a World.")
             return
         new_name = simpledialog.askstring("Rename World", f"New name for '{old_name}':", parent=self.root)
@@ -3060,51 +3089,59 @@ class BedrockUpdaterApp:
         if not new_name or any(c in new_name for c in '/\\:*?"<>|'):
             messagebox.showerror("Invalid Name", "The World name is empty or contains invalid characters.")
             return
-        worlds_dir = Path(server_path) / "worlds"
-        if not (worlds_dir / old_name).exists():
+        try:
+            existing = {w["name"] for w in acc.list_worlds()}
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            return
+        if old_name not in existing:
             messagebox.showinfo("Not created yet",
                 f"'{old_name}' hasn't been generated yet — it's only the Active World pointer.\n"
                 "Start the Server once to create it, or just create a new World with the name you want.")
             return
-        if (worlds_dir / new_name).exists():
+        if new_name in existing:
             messagebox.showerror("Exists", f"A World named '{new_name}' already exists.")
             return
         try:
-            (worlds_dir / old_name).rename(worlds_dir / new_name)
+            ok = acc.rename_world(old_name, new_name)
         except Exception as e:
             messagebox.showerror("Error", f"Could not rename World:\n{e}")
             return
-        props = self.parse_server_properties(Path(server_path) / "server.properties")
-        if props.get("level-name") == old_name:
-            self.set_active_world(new_name)
+        if not ok:
+            messagebox.showerror("Error", "Could not rename World.")
+            return
         self.log(f"Renamed World '{old_name}' to '{new_name}'", "success")
         self.refresh_worlds()
         self.refresh_world_combo()
 
     def delete_selected_world(self):
-        if self._block_if_remote("Deleting a World"):
+        acc = self.active_access
+        if acc is None:
             return
         selected = self.world_tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "No World selected.")
             return
         name = str(self.world_tree.item(selected[0])["values"][0])
-        server_path = self.server_entry.get()
-        if not server_path:
+        try:
+            active = acc.get_active_world()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
             return
-        props = self.parse_server_properties(Path(server_path) / "server.properties")
-        if name == props.get("level-name"):
+        if name == active:
             messagebox.showwarning("Active World", "You can't delete the Active World. Switch to another World first.")
             return
-        if self.active_access and self.active_access.is_running():
+        if acc.is_running():
             messagebox.showwarning("Server Running", "Stop the Server before deleting a World.")
             return
         if not messagebox.askyesno("Delete World",
                 f"Permanently delete the World '{name}'?\n\nThis cannot be undone (older backups may still contain it)."):
             return
         try:
-            shutil.rmtree(Path(server_path) / "worlds" / name)
-            self.log(f"Deleted World: {name}", "info")
+            if acc.delete_world(name):
+                self.log(f"Deleted World: {name}", "info")
+            else:
+                messagebox.showerror("Error", "Could not delete World.")
         except Exception as e:
             messagebox.showerror("Error", f"Could not delete World:\n{e}")
         self.refresh_worlds()
