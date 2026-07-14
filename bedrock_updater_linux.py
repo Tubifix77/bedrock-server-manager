@@ -1162,6 +1162,50 @@ class FramedConnection:
             pass
 
 
+def remote_connect(host: str, port: int, token: str, timeout: float = 6.0):
+    """Open and authenticate a client connection to a host (synchronous, linear).
+
+    Returns (FramedConnection, machine_info dict) on success; raises RuntimeError
+    with a human-readable message otherwise. This is the shared handshake used by
+    both the "Test connection" button and MachineConnection's (re)connect path —
+    it does NOT start any background thread.
+    """
+    try:
+        sock = socket.create_connection((host, int(port)), timeout=timeout)
+    except ConnectionRefusedError:
+        raise RuntimeError(f"No host is accepting administration at {host}:{port}. "
+                           "Is Remote Administration enabled there?")
+    except (socket.timeout, OSError) as e:
+        raise RuntimeError(f"Could not reach {host}:{port} ({e}).")
+    sock.settimeout(timeout)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except Exception:
+        pass
+    conn = FramedConnection(sock)
+    try:
+        conn.send_message({"type": "hello", "proto": REMOTE_PROTO_VERSION, "app": APP_VERSION})
+        challenge = conn.recv_message()
+        if not challenge or challenge.get("type") != "challenge":
+            if challenge and challenge.get("type") == "error":
+                raise RuntimeError(challenge.get("error", "the host refused the connection"))
+            raise RuntimeError("unexpected response from host during handshake")
+        conn.send_message({"type": "auth", "response": compute_auth(token, challenge["nonce"])})
+        ok = conn.recv_message()
+        if not ok or ok.get("type") != "ok":
+            raise RuntimeError((ok or {}).get("error", "the pairing token was rejected"))
+        return conn, ok.get("machine", {})
+    except ProtocolError as e:
+        conn.close()
+        raise RuntimeError(f"protocol error: {e}")
+    except (socket.timeout, OSError) as e:
+        conn.close()
+        raise RuntimeError(f"connection lost during handshake ({e})")
+    except RuntimeError:
+        conn.close()
+        raise
+
+
 # ============================================================================
 # REMOTE ADMINISTRATION — HOST SERVICE
 # ============================================================================
@@ -2815,6 +2859,19 @@ class BedrockUpdaterApp:
     def remote_machine_info(self) -> dict:
         return {"name": socket.gethostname(), "platform": sys.platform,
                 "app_version": APP_VERSION, "servers": self.remote_server_list()}
+
+    # --- Remote Machines the administrator connects OUT to (config store) --
+    def add_machine(self, name: str, host: str, port: int, token: str) -> dict:
+        machine = {"id": uuid.uuid4().hex[:8], "name": name.strip() or host,
+                   "host": host.strip(), "port": int(port), "token": token.strip()}
+        self.config.setdefault("machines", []).append(machine)
+        save_config(self.config)
+        return machine
+
+    def remove_machine(self, machine_id: str):
+        machines = self.config.get("machines", [])
+        self.config["machines"] = [m for m in machines if m.get("id") != machine_id]
+        save_config(self.config)
 
     # --- Remote-admin host control (Settings > Remote Administration) -----
     def toggle_remote_admin(self, startup: bool = False):
