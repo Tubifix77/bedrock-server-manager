@@ -484,16 +484,27 @@ class BackupManager:
     def __init__(self, server_path: Path, config: dict):
         self.server_path = server_path
         self.config = config
-        self.backup_dir = server_path.parent / "bedrock_backups"
-    
+        # New backups are namespaced per-Server (docs/V2-MAJORDOMO-PLAN.md,
+        # "Config v2 & migration") so multiple Servers sharing a parent folder
+        # don't mix their backups. Nothing here MOVES the pre-2.0 flat
+        # backups -- list_backups()/cleanup still find them under
+        # legacy_backup_dir, so rolling back to 1.0.4 still finds everything.
+        self.backup_dir = server_path.parent / "bedrock_backups" / server_path.name
+        self.legacy_backup_dir = server_path.parent / "bedrock_backups"
+
     def get_backup_dir(self) -> Path:
-        self.backup_dir.mkdir(exist_ok=True)
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
         return self.backup_dir
-    
+
     def list_backups(self) -> List[Dict]:
         backups = []
-        if self.backup_dir.exists():
-            for item in sorted(self.backup_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        dirs = [self.backup_dir]
+        if self.legacy_backup_dir.exists() and self.legacy_backup_dir != self.backup_dir:
+            dirs.append(self.legacy_backup_dir)
+        for backup_dir in dirs:
+            if not backup_dir.exists():
+                continue
+            for item in backup_dir.iterdir():
                 if item.name.startswith("backup_"):
                     try:
                         size = get_folder_size(item) if item.is_dir() else item.stat().st_size
@@ -507,6 +518,7 @@ class BackupManager:
                         })
                     except Exception:
                         pass
+        backups.sort(key=lambda b: b["timestamp"], reverse=True)
         return backups
     
     def create_backup(self, preserve_items: List[str], compress: bool = False, 
@@ -2487,8 +2499,12 @@ class BedrockUpdaterApp:
         if server_path and Path(server_path).exists():
             props = self.parse_server_properties(Path(server_path))
             name = props.get("server-name", Path(server_path).name)
+            # .backup_dir (attribute), not get_backup_dir() -- just displaying
+            # the path shouldn't have the side effect of creating the folder.
+            stored_in = self.backup_manager.backup_dir if self.backup_manager else \
+                Path(server_path).parent / "bedrock_backups" / Path(server_path).name
             self.backup_header_label.config(
-                text=f"Backups for: {name}  —  stored in {Path(server_path).parent / 'bedrock_backups'}")
+                text=f"Backups for: {name}  —  stored in {stored_in}")
         else:
             self.backup_header_label.config(text="Backups for: (no Server selected)")
 
