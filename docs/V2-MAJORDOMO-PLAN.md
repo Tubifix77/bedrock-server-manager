@@ -1,8 +1,12 @@
 # Bedrock Server Manager 2.0 "Majordomo" — multi-Server, multi-Machine administration
 
-> **STATUS (2026-07-14):** Planning finished and reviewed with the user. **No code written
-> yet** — this branch (`v2-majordomo`) currently differs from `master` only by this planning
-> document. Implementation is deliberately deferred.
+> **STATUS (2026-07-14):** **Stage 1 (Multi-Server local) is DONE and verified**, commits
+> `ee3de63`..`af5c803` on `v2-majordomo` (config v2 migration, per-profile registry, sidebar,
+> port guard + multi-stop close, backup namespacing, per-Server settings relocation — one
+> commit each, each verified before the next). Currently **paused at the Stage 1 → Stage 2
+> gate**, waiting for the user to switch the model to Opus 4.8 before any network code is
+> written. `master`/`main` and the family's live 1.0.4 laptop were never touched by any of
+> this — verification was entirely headless/scripted against scratch configs.
 >
 > **Branching decision:** 2.0 lives on the `v2-majordomo` branch of *this same repo*, not a
 > separate repo — 2.0 is a refactor of the same single file (one file is both host and
@@ -13,9 +17,9 @@
 > split required for that.
 >
 > **To resume coding:** work on this branch, read this file + `CLAUDE.md` + the relevant
-> slices of `bedrock_updater_linux.py`, then implement **Stage 1 only** (see Build stages) and
-> verify before touching Stage 2. No subagents needed. The laptop's live 1.0.4 must keep
-> working throughout — it only ever pulls tagged releases, never this branch tip.
+> slices of `bedrock_updater_linux.py`, then implement **Stage 2 (Host service)** — see Build
+> stages below — and verify before touching Stage 3. No subagents needed. The laptop's live
+> 1.0.4 must keep working throughout — it only ever pulls tagged releases, never this branch tip.
 >
 > **⛔ MODEL/EFFORT PLAN — the implementing session MUST honor this:**
 > - **Stage 1** → **Sonnet 5, effort `high`** (wide mechanical refactor).
@@ -205,11 +209,18 @@ docs note only (systemd/Task Scheduler), not automated in 2.0.
 > implementation** — it's a single, well-mapped file; fine-grained design (exact method
 > signatures, message-by-message protocol) is settled in-line while coding Stage 2/3.
 
-1. **Multi-Server local** *(Sonnet 5, effort `high`)*: config v2 + migration; extract
-   ServerAccess; registry of LocalServerAccess instances; per-Server console ring buffers;
-   sidebar (local Machine only); port-collision guard before start; on_close stops all running
-   local Servers after a confirm that lists them. *Checkpoint: everything 1.0.4 does, times N,
-   locally.* When done: run the 1.0.4 feature regression pass (Verification #7) before Stage 2.
+1. ✅ **DONE — Multi-Server local** *(Sonnet 5, effort `high`)*: config v2 + migration
+   (`ee3de63`); per-profile registry of ServerManager/BackupManager (`cf53ac4`); sidebar —
+   Machines/Servers tree, switch-with-unsaved-edit-guard, running-state resync, console replay
+   (`c8ad348`); port-collision guard + multi-Server confirm-stop on close (`f8156f4`); backup
+   namespacing, rollback-safe (`812d736`); per-Server settings relocated off Settings
+   (`af5c803`). Full regression pass (Verification #7) run against a simulated realistic
+   1.0.4-style config — passed. Note: this used the existing direct-access code (parse
+   properties, ServerManager, BackupManager) wrapped in the per-profile registry, rather than
+   first extracting a formal ServerAccess interface class — the registry already gives Stage 2
+   a clean seam (`self.contexts[profile_id]`) to route remote calls through; a dedicated
+   ServerAccess abstraction can still be introduced in Stage 2 if the host-service work wants
+   one, without redoing Stage 1.
 
 > **⛔ STOP — MODEL SWITCH GATE (Stage 1 → 2).** Stage 1 is complete and verified. Do **not**
 > start Stage 2 on Sonnet. Pause here and ask the user: *"Stage 1 is done and tested. The
