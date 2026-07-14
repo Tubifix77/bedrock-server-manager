@@ -1549,6 +1549,220 @@ class _ClientConn:
 
 
 # ============================================================================
+# REMOTE ADMINISTRATION — CLIENT (Machine connection)
+# ============================================================================
+#
+# The administrator's side: one MachineConnection per remote Machine. A single
+# worker thread owns the socket's whole life -- (re)connect via remote_connect,
+# then read messages until the link dies, then back off and reconnect -- so
+# there is never more than one thread reading a given socket. Callers send
+# requests from any thread (usually the tkinter thread); FramedConnection's
+# locked send makes that safe alongside the worker's reads.
+#
+# Correlation: request() registers a slot keyed by a monotonic id and blocks on
+# an Event until the worker matches the response by id (or a timeout fires, or
+# the link drops -- which fails every in-flight request so no caller ever hangs).
+# Server-pushed events go to on_event; connect/disconnect to on_state. Both fire
+# on the worker thread; the caller wraps them to marshal onto the UI thread.
+
+_REQUEST_TIMEOUT = 12.0        # seconds a blocking request waits for its response
+_READ_TIMEOUT = 1.0            # recv poll interval, so close()/shutdown is prompt
+_RECONNECT_MIN = 1.0           # backoff floor after a dropped/refused connection
+_RECONNECT_MAX = 15.0          # backoff ceiling
+_HEARTBEAT_INTERVAL = 20.0     # if idle this long, probe the host (reuses list_servers)
+_HEARTBEAT_DEAD = 50.0         # no bytes at all for this long => treat link as dead
+
+
+class _PendingRequest:
+    __slots__ = ("event", "result", "error")
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.result = None
+        self.error = None
+
+
+class MachineConnection:
+    """Persistent, auto-reconnecting connection to one remote Machine.
+
+    on_event(event_dict) and on_state(connected: bool, detail: str) are invoked
+    on the worker thread -- the caller is responsible for marshaling them onto
+    the UI thread (e.g. root.after)."""
+
+    def __init__(self, machine: dict, on_event=None, on_state=None, log=None):
+        self.machine = machine
+        self.id = machine.get("id")
+        self.name = machine.get("name") or machine.get("host")
+        self.host = machine["host"]
+        self.port = int(machine.get("port", REMOTE_DEFAULT_PORT))
+        self.token = machine.get("token", "")
+        self._on_event = on_event or (lambda ev: None)
+        self._on_state = on_state or (lambda connected, detail: None)
+        self._log = log or (lambda m: None)
+
+        self._lock = threading.Lock()
+        self._conn = None
+        self._pending = {}
+        self._id_counter = 1
+        self._connected = False
+        self._closed = False
+        self._machine_info = {}
+        self._wake = threading.Event()      # interrupts the backoff sleep on close()
+        self._worker = None
+
+    # --- lifecycle -------------------------------------------------------
+    def start(self):
+        if self._worker is not None:
+            return
+        self._worker = threading.Thread(target=self._run, name=f"machine-{self.name}", daemon=True)
+        self._worker.start()
+
+    def close(self):
+        self._closed = True
+        self._wake.set()
+        with self._lock:
+            conn = self._conn
+            self._conn = None
+        if conn:
+            conn.close()  # unblock the worker's recv
+        self._fail_pending("connection closed")
+
+    def is_connected(self) -> bool:
+        with self._lock:
+            return self._connected
+
+    @property
+    def machine_info(self) -> dict:
+        with self._lock:
+            return dict(self._machine_info)
+
+    # --- requests --------------------------------------------------------
+    def request(self, op: str, server=None, params: dict = None, timeout: float = _REQUEST_TIMEOUT) -> dict:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("connection is closed")
+            conn = self._conn
+            if conn is None:
+                raise RuntimeError(f"not connected to {self.name}")
+            rid = self._id_counter
+            self._id_counter += 1
+            pending = _PendingRequest()
+            self._pending[rid] = pending
+        try:
+            conn.send_message({"type": "req", "id": rid, "op": op, "server": server, "params": params or {}})
+        except OSError as e:
+            with self._lock:
+                self._pending.pop(rid, None)
+            raise RuntimeError(f"failed to send '{op}': {e}")
+        if not pending.event.wait(timeout):
+            with self._lock:
+                self._pending.pop(rid, None)
+            raise TimeoutError(f"'{op}' timed out after {timeout:g}s")
+        if pending.error is not None:
+            raise RuntimeError(pending.error)
+        return pending.result if pending.result is not None else {}
+
+    def _fail_pending(self, reason: str):
+        with self._lock:
+            items = list(self._pending.items())
+            self._pending.clear()
+        for _rid, pending in items:
+            pending.error = reason
+            pending.event.set()
+
+    # --- worker: connect -> read -> reconnect ----------------------------
+    def _run(self):
+        backoff = _RECONNECT_MIN
+        while not self._closed:
+            try:
+                conn, info = remote_connect(self.host, self.port, self.token)
+            except RuntimeError as e:
+                self._notify_state(False, str(e))
+                if self._wake.wait(backoff) or self._closed:
+                    break
+                backoff = min(backoff * 2, _RECONNECT_MAX)
+                continue
+            # connected
+            with self._lock:
+                self._conn = conn
+                self._machine_info = info
+                self._connected = True
+            backoff = _RECONNECT_MIN
+            self._notify_state(True, "connected")
+            self._read_until_dead(conn)
+            # link died
+            with self._lock:
+                self._conn = None
+                self._connected = False
+            self._fail_pending("connection lost")
+            conn.close()
+            if self._closed:
+                break
+            self._notify_state(False, "connection lost — reconnecting")
+            if self._wake.wait(backoff):
+                break
+            backoff = min(backoff * 2, _RECONNECT_MAX)
+
+    def _read_until_dead(self, conn: FramedConnection):
+        try:
+            conn.sock.settimeout(_READ_TIMEOUT)
+        except OSError:
+            return
+        last_recv = time.monotonic()
+        last_hb = time.monotonic()
+        while not self._closed:
+            try:
+                msg = conn.recv_message()
+            except socket.timeout:
+                now = time.monotonic()
+                if now - last_recv > _HEARTBEAT_DEAD:
+                    break  # host went silent -> force reconnect
+                if now - last_recv > _HEARTBEAT_INTERVAL and now - last_hb > _HEARTBEAT_INTERVAL:
+                    last_hb = now
+                    self._send_heartbeat(conn)
+                continue
+            except (ProtocolError, OSError):
+                break
+            if msg is None:
+                break
+            last_recv = time.monotonic()
+            self._handle_message(msg)
+
+    def _send_heartbeat(self, conn: FramedConnection):
+        # Fire-and-forget: a real round-trip that keeps the link warm and, more
+        # importantly, whose *response* refreshes last_recv. id 0 is never used
+        # by request() (which starts at 1), so the reply is simply ignored.
+        try:
+            conn.send_message({"type": "req", "id": 0, "op": "list_servers", "server": None, "params": {}})
+        except OSError:
+            pass  # the read loop will notice the dead socket
+
+    def _handle_message(self, msg: dict):
+        mtype = msg.get("type")
+        if mtype == "resp":
+            rid = msg.get("id")
+            with self._lock:
+                pending = self._pending.pop(rid, None)
+            if pending is not None:
+                if msg.get("ok"):
+                    pending.result = msg.get("result", {})
+                else:
+                    pending.error = msg.get("error", "remote error")
+                pending.event.set()
+        elif mtype == "event":
+            try:
+                self._on_event(msg)
+            except Exception:
+                pass
+
+    def _notify_state(self, connected: bool, detail: str):
+        try:
+            self._on_state(connected, detail)
+        except Exception:
+            pass
+
+
+# ============================================================================
 # MAIN APPLICATION
 # ============================================================================
 
