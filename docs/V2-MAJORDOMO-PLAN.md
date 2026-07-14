@@ -16,6 +16,16 @@
 > slices of `bedrock_updater_linux.py`, then implement **Stage 1 only** (see Build stages) and
 > verify before touching Stage 2. No subagents needed. The laptop's live 1.0.4 must keep
 > working throughout — it only ever pulls tagged releases, never this branch tip.
+>
+> **⛔ MODEL/EFFORT PLAN — the implementing session MUST honor this:**
+> - **Stage 1** → **Sonnet 5, effort `high`** (wide mechanical refactor).
+> - **Stages 2–3 (networking core)** → **Opus 4.8, effort `high`** (bump the concurrency bits —
+>   reader thread, request/response correlation, reconnect, UI marshaling — to `xhigh` if a
+>   first pass misbehaves). This is the hidden-bug zone; the stronger model is deliberate.
+> - **Stage 4** → **Sonnet 5, effort `medium`** (docs/packaging).
+> - **At the Stage 1 → Stage 2 boundary: STOP and ask the user to switch the model to
+>   Opus 4.8 before writing any network code.** Do not begin Stage 2 on Sonnet. (See the gate
+>   in Build stages below.)
 
 ## Context
 
@@ -195,12 +205,21 @@ docs note only (systemd/Task Scheduler), not automated in 2.0.
 > implementation** — it's a single, well-mapped file; fine-grained design (exact method
 > signatures, message-by-message protocol) is settled in-line while coding Stage 2/3.
 
-1. **Multi-Server local**: config v2 + migration; extract ServerAccess; registry of
-   LocalServerAccess instances; per-Server console ring buffers; sidebar (local Machine only);
-   port-collision guard before start; on_close stops all running local Servers after a
-   confirm that lists them. *Checkpoint: everything 1.0.4 does, times N, locally.*
-2. **Host service**: protocol + auth + host loop in-process; `--agent` mode; Settings
-   "Remote Administration" section (toggle, port, token display/regenerate).
+1. **Multi-Server local** *(Sonnet 5, effort `high`)*: config v2 + migration; extract
+   ServerAccess; registry of LocalServerAccess instances; per-Server console ring buffers;
+   sidebar (local Machine only); port-collision guard before start; on_close stops all running
+   local Servers after a confirm that lists them. *Checkpoint: everything 1.0.4 does, times N,
+   locally.* When done: run the 1.0.4 feature regression pass (Verification #7) before Stage 2.
+
+> **⛔ STOP — MODEL SWITCH GATE (Stage 1 → 2).** Stage 1 is complete and verified. Do **not**
+> start Stage 2 on Sonnet. Pause here and ask the user: *"Stage 1 is done and tested. The
+> networking core (Stages 2–3) is the hidden-bug zone — please switch the model to
+> **Opus 4.8** (effort `high`) before I write any network code."* Wait for the user to confirm
+> the switch before proceeding.
+
+2. **Host service** *(Opus 4.8, effort `high`)*: protocol + auth + host loop in-process;
+   `--agent` mode; Settings "Remote Administration" section (toggle, port, token
+   display/regenerate).
 3. **Remote client**: RemoteServerAccess + Machine connection (reader thread, request/response
    correlation, reconnect with backoff, `root.after` marshaling); pairing UX; remote rows in
    the sidebar. *Checkpoint: full loopback test on the dev PC.*
