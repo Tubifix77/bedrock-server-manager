@@ -2326,18 +2326,40 @@ class BedrockUpdaterApp:
         elif current is self.players_tab:
             self.refresh_players_tab()
 
-    def _build_context(self, server_path: Path) -> "ServerService":
+    def _build_context(self, profile_id: str, server_path: Path) -> "ServerService":
         """Construct a fresh ServerService for a profile and attach the GUI's
         widget callbacks. The service owns the ServerManager/BackupManager and
         the console ring buffer (its console_buffer callback is registered in
-        its own __init__); here we add the GUI-side callbacks (console widget,
-        player-learning, status) marshaled onto the tkinter thread."""
-        known = self.config.get("known_players", {})
+        its own __init__). The GUI-side callbacks are keyed to profile_id and
+        marshaled onto the tkinter thread: they only touch the console/control
+        widgets when THIS profile is the one currently selected, so a Server
+        left running in the background (or driven by a remote admin) never
+        leaks its output into the console you're viewing -- only the sidebar
+        status dot updates for a background Server."""
+        profile = self.config.get("server_profiles", {}).get(profile_id, {})
+        known = profile.setdefault("known_players", {}) if profile else {}
         service = ServerService(server_path, self.config, known_players=known)
-        service.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self.console_log(line)))
-        service.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self._scan_console_line(line)))
-        service.server_manager.add_status_callback(lambda status: self.root.after(0, lambda: self.update_server_status(status)))
+        service.server_manager.add_output_callback(
+            lambda line, pid=profile_id: self.root.after(0, lambda: self._on_service_output(pid, line)))
+        service.server_manager.add_status_callback(
+            lambda status, pid=profile_id: self.root.after(0, lambda: self._on_service_status(pid, status)))
         return service
+
+    def _on_service_output(self, profile_id: str, line: str):
+        """A console line from any Server. The per-service ring buffer already
+        captured it; only mirror it into the shared console widget (and learn
+        players from it) when this profile is the active one."""
+        if self.config.get("active_profile") == profile_id:
+            self.console_log(line)
+            self._scan_console_line(line)
+
+    def _on_service_status(self, profile_id: str, status: str):
+        """A start/stop from any Server. Refresh the sidebar dots always;
+        drive the active-Server control widgets only for the active profile."""
+        if self.config.get("active_profile") == profile_id:
+            self.update_server_status(status)  # updates the control widgets AND the sidebar
+        else:
+            self.refresh_sidebar()
 
     def _get_or_create_context(self, profile_id: str, server_path: Path) -> Optional["ServerService"]:
         """Return the ServerService for profile_id, creating it if needed.
@@ -2353,7 +2375,25 @@ class BedrockUpdaterApp:
                 return ctx
             if ctx.is_running():
                 return None
-        ctx = self._build_context(server_path)
+        ctx = self._build_context(profile_id, server_path)
+        self.contexts[profile_id] = ctx
+        return ctx
+
+    def _ensure_service(self, profile_id: str) -> Optional["ServerService"]:
+        """Return the ServerService for ANY profile, building it at its
+        configured path if the local GUI never activated it. Used by the
+        remote-admin host, which serves every configured Server -- not just
+        the one currently selected in the sidebar."""
+        ctx = self.contexts.get(profile_id)
+        if ctx is not None:
+            return ctx
+        profile = self.config.get("server_profiles", {}).get(profile_id)
+        if not profile or not profile.get("path"):
+            return None
+        path = Path(profile["path"])
+        if not path.exists():
+            return None
+        ctx = self._build_context(profile_id, path)
         self.contexts[profile_id] = ctx
         return ctx
 
