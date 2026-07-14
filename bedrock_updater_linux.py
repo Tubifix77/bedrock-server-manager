@@ -480,6 +480,63 @@ def open_url(url: str):
     webbrowser.open(url)
 
 
+def parse_server_properties(filepath: Path) -> Dict[str, str]:
+    """Read server.properties into a key->value dict. Accepts a file or its
+    parent dir. Module-level (no app/widgets) so ServerService and the headless
+    --agent can use it too; BedrockUpdaterApp.parse_server_properties delegates
+    here."""
+    props = {}
+    if filepath.is_dir():
+        filepath = filepath / "server.properties"
+    if not filepath.exists():
+        return props
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    props[key.strip()] = value.strip()
+    except Exception:
+        pass
+    return props
+
+
+def save_server_properties(filepath: Path, props: Dict[str, str]) -> bool:
+    """Write props back into server.properties, preserving comment lines and
+    ordering for keys that already exist, appending any new keys."""
+    if not filepath.exists():
+        try:
+            with open(filepath, 'w') as f:
+                for k, v in props.items():
+                    f.write(f"{k}={v}\n")
+            return True
+        except Exception:
+            return False
+    try:
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
+        used_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith('#') and '=' in stripped:
+                key = stripped.split('=', 1)[0].strip()
+                if key in props:
+                    new_lines.append(f"{key}={props[key]}\n")
+                    used_keys.add(key)
+                    continue
+            new_lines.append(line)
+        for key, value in props.items():
+            if key not in used_keys:
+                new_lines.append(f"{key}={value}\n")
+        with open(filepath, 'w') as f:
+            f.writelines(new_lines)
+        return True
+    except Exception:
+        return False
+
+
 # ============================================================================
 # BACKUP MANAGER
 # ============================================================================
@@ -796,6 +853,195 @@ class ServerManager:
 
 
 # ============================================================================
+# SERVER SERVICE — headless per-Server operations
+# ============================================================================
+#
+# One Server's operations with NO tkinter/widget dependency: process control,
+# file reads/writes, players, gamerules, backups. Both the GUI (via the
+# per-profile registry, self.contexts) and the remote-admin host / --agent
+# operate through this same object, so an op triggered locally or remotely
+# hits the identical code and (in-process) the identical ServerManager.
+#
+# Mutating process ops take a per-Server lock so two callers (e.g. the local
+# GUI and a remote administrator, or two administrators) can't start/stop the
+# same Server at once. File writes are last-write-wins (documented, family-scale).
+
+class ServerService:
+    def __init__(self, server_path: Path, config: dict, known_players: Optional[dict] = None):
+        self.server_path = Path(server_path)
+        self.config = config
+        self.known_players = known_players if known_players is not None else {}
+        self.server_manager = ServerManager(self.server_path)
+        self.backup_manager = BackupManager(self.server_path, config)
+        self.console_buffer = deque(maxlen=config.get("console_max_lines", 1000))
+        self.server_manager.add_output_callback(self.console_buffer.append)
+        self._op_lock = threading.Lock()
+
+    # --- process control -------------------------------------------------
+    def is_running(self) -> bool:
+        return self.server_manager.is_running()
+
+    def start(self) -> bool:
+        with self._op_lock:
+            if self.server_manager.is_running():
+                return False
+            return self.server_manager.start()
+
+    def stop(self) -> bool:
+        with self._op_lock:
+            return self.server_manager.stop()
+
+    def restart(self) -> bool:
+        with self._op_lock:
+            if self.server_manager.is_running():
+                self.server_manager.stop()
+                time.sleep(2)
+            return self.server_manager.start()
+
+    def send_command(self, command: str):
+        self.server_manager.send_command(command)
+
+    def console_snapshot(self) -> List[str]:
+        return list(self.console_buffer)
+
+    def server_port(self) -> str:
+        return parse_server_properties(self.server_path / "server.properties").get("server-port", "19132")
+
+    # --- reads -----------------------------------------------------------
+    def get_info(self) -> dict:
+        props = parse_server_properties(self.server_path)
+        worlds = get_world_info(self.server_path)
+        active = props.get("level-name", "")
+        return {
+            "name": props.get("server-name", self.server_path.name),
+            "version": detect_server_version(self.server_path),
+            "active_world": active,
+            "gamemode": props.get("gamemode", "unknown"),
+            "difficulty": props.get("difficulty", "unknown"),
+            "max_players": props.get("max-players", "unknown"),
+            "port": props.get("server-port", "19132"),
+            "worlds_count": len(worlds),
+            "worlds_size": format_size(get_folder_size(self.server_path / "worlds")),
+            "running": self.is_running(),
+            "platform": sys.platform,
+            "valid": is_valid_bedrock_server(str(self.server_path))[0],
+        }
+
+    def list_worlds(self) -> List[dict]:
+        return get_world_info(self.server_path)
+
+    def read_properties(self) -> Dict[str, str]:
+        return parse_server_properties(self.server_path / "server.properties")
+
+    def get_active_world(self) -> str:
+        return self.read_properties().get("level-name", "")
+
+    def read_gamerules(self) -> dict:
+        active = self.get_active_world()
+        return read_world_gamerules(self.server_path / "worlds" / active)
+
+    # --- player JSON helpers (allowlist.json / permissions.json) ---------
+    def _load_player_json(self, filename: str) -> list:
+        p = self.server_path / filename
+        try:
+            if p.exists():
+                data = json.loads(p.read_text())
+                return data if isinstance(data, list) else []
+        except Exception:
+            pass
+        return []
+
+    def _save_player_json(self, filename: str, entries: list):
+        (self.server_path / filename).write_text(json.dumps(entries, indent=2))
+
+    def get_players(self) -> dict:
+        props = self.read_properties()
+        return {
+            "allowlist": self._load_player_json("allowlist.json"),
+            "permissions": self._load_player_json("permissions.json"),
+            "known_players": dict(self.known_players),
+            "allow_list_enabled": props.get("allow-list", "false").lower() == "true",
+            "force_gamemode": props.get("force-gamemode", "false").lower() == "true",
+        }
+
+    # --- writes ----------------------------------------------------------
+    def write_properties(self, props: Dict[str, str]) -> bool:
+        return save_server_properties(self.server_path / "server.properties", props)
+
+    def set_active_world(self, name: str) -> bool:
+        props_path = self.server_path / "server.properties"
+        props = parse_server_properties(props_path)
+        props["level-name"] = name
+        return save_server_properties(props_path, props)
+
+    def set_allowlist_enforcement(self, enable: bool) -> bool:
+        props_path = self.server_path / "server.properties"
+        props = parse_server_properties(props_path)
+        props["allow-list"] = "true" if enable else "false"
+        ok = save_server_properties(props_path, props)
+        if self.is_running():
+            self.send_command("allowlist " + ("on" if enable else "off"))
+        return ok
+
+    def add_allowlist_player(self, name: str, xuid: Optional[str] = None):
+        entries = self._load_player_json("allowlist.json")
+        if any(e.get("name", "").lower() == name.lower() for e in entries):
+            return
+        entry = {"ignoresPlayerLimit": False, "name": name}
+        xuid = xuid or self.known_players.get(name)
+        if xuid:
+            entry["xuid"] = str(xuid)
+        entries.append(entry)
+        self._save_player_json("allowlist.json", entries)
+        if self.is_running():
+            self.send_command(f'allowlist add "{name}"')
+
+    def remove_allowlist_player(self, name: str):
+        entries = [e for e in self._load_player_json("allowlist.json") if e.get("name") != name]
+        self._save_player_json("allowlist.json", entries)
+        if self.is_running():
+            self.send_command(f'allowlist remove "{name}"')
+
+    def set_permission(self, xuid: str, level: str):
+        entries = [e for e in self._load_player_json("permissions.json") if str(e.get("xuid")) != str(xuid)]
+        entries.append({"permission": level, "xuid": str(xuid)})
+        self._save_player_json("permissions.json", entries)
+        if self.is_running():
+            self.send_command("permission reload")
+
+    def remove_permission(self, xuid: str):
+        entries = [e for e in self._load_player_json("permissions.json") if str(e.get("xuid")) != str(xuid)]
+        self._save_player_json("permissions.json", entries)
+        if self.is_running():
+            self.send_command("permission reload")
+
+    def send_gamerule(self, rule: str, value: str):
+        if not self.is_running():
+            raise RuntimeError("Server must be running to change gamerules")
+        self.send_command(f"gamerule {rule} {value}")
+
+    def set_gamemode(self, name: str, mode: str):
+        if not self.is_running():
+            raise RuntimeError("Server must be running to set a player's game mode")
+        self.send_command(f'gamemode {mode} "{name}"')
+
+    # --- backups ---------------------------------------------------------
+    def list_backups(self) -> List[dict]:
+        return [{"name": b["name"], "date": b["date"], "size": b["size"], "path": str(b["path"])}
+                for b in self.backup_manager.list_backups()]
+
+    def create_backup(self, preserve_items: List[str], compress: bool = False, progress_callback=None):
+        return self.backup_manager.create_backup(preserve_items, compress=compress,
+                                                 progress_callback=progress_callback)
+
+    def restore_backup(self, backup_path: Path, progress_callback=None):
+        return self.backup_manager.restore_backup(Path(backup_path), progress_callback=progress_callback)
+
+    def delete_backup(self, backup_path: Path) -> bool:
+        return self.backup_manager.delete_backup(Path(backup_path))
+
+
+# ============================================================================
 # REMOTE ADMINISTRATION — WIRE PROTOCOL & AUTH
 # ============================================================================
 #
@@ -984,50 +1230,16 @@ class BedrockUpdaterApp:
             print(f"Could not set window icon: {e}")
 
     def parse_server_properties(self, filepath: Path) -> Dict[str, str]:
-        props = {}
-        if filepath.is_dir():
-            filepath = filepath / "server.properties"
-        if not filepath.exists(): 
-            return props
-        try:
-            with open(filepath, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, value = line.split('=', 1)
-                        props[key.strip()] = value.strip()
-        except Exception as e:
-            self.log(f"Error parsing properties: {e}", "error")
-        return props
+        # Delegates to the module-level function (shared with ServerService /
+        # the headless --agent); kept as a method so existing call sites and
+        # ServerPropertiesEditor (self.app.parse_server_properties) are unchanged.
+        return parse_server_properties(filepath)
 
     def save_server_properties(self, filepath: Path, props: Dict[str, str]):
-        if not filepath.exists():
-            with open(filepath, 'w') as f:
-                for k, v in props.items(): f.write(f"{k}={v}\n")
-            return True
-        try:
-            with open(filepath, 'r') as f:
-                lines = f.readlines()
-            used_keys = set()
-            new_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if stripped and not stripped.startswith('#') and '=' in stripped:
-                    key = stripped.split('=', 1)[0].strip()
-                    if key in props:
-                        new_lines.append(f"{key}={props[key]}\n")
-                        used_keys.add(key)
-                        continue
-                new_lines.append(line)
-            for key, value in props.items():
-                if key not in used_keys:
-                    new_lines.append(f"{key}={value}\n")
-            with open(filepath, 'w') as f:
-                f.writelines(new_lines)
-            return True
-        except Exception as e:
-            self.log(f"Error saving properties: {e}", "error")
-            return False
+        ok = save_server_properties(filepath, props)
+        if not ok:
+            self.log("Error saving properties", "error")
+        return ok
 
     def setup_keyboard_shortcuts(self):
         self.root.bind("<Control-o>", lambda e: self.browse_server())
@@ -1117,7 +1329,7 @@ class BedrockUpdaterApp:
                                                  text="🖥 This computer", open=True)
         active_id = self.config.get("active_profile")
         for pid, profile in self.config.get("server_profiles", {}).items():
-            running = pid in self.contexts and self.contexts[pid]["server_manager"].is_running()
+            running = pid in self.contexts and self.contexts[pid].is_running()
             dot = "🟢" if running else "⚪"
             self.sidebar_tree.insert(machine_node, tk.END, iid=f"profile:{pid}",
                                       text=f"{dot} {profile.get('name') or 'Server'}")
@@ -2114,34 +2326,32 @@ class BedrockUpdaterApp:
         elif current is self.players_tab:
             self.refresh_players_tab()
 
-    def _build_context(self, server_path: Path) -> dict:
-        """Construct a fresh registry entry: its own ServerManager, BackupManager,
-        and a console ring buffer (for replay once the sidebar can reselect it)."""
-        server_manager = ServerManager(server_path)
-        console_buffer = deque(maxlen=self.config.get("console_max_lines", 1000))
-        server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self.console_log(line)))
-        server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self._scan_console_line(line)))
-        server_manager.add_output_callback(console_buffer.append)
-        server_manager.add_status_callback(lambda status: self.root.after(0, lambda: self.update_server_status(status)))
-        return {
-            "server_manager": server_manager,
-            "backup_manager": BackupManager(server_path, self.config),
-            "console_buffer": console_buffer,
-        }
+    def _build_context(self, server_path: Path) -> "ServerService":
+        """Construct a fresh ServerService for a profile and attach the GUI's
+        widget callbacks. The service owns the ServerManager/BackupManager and
+        the console ring buffer (its console_buffer callback is registered in
+        its own __init__); here we add the GUI-side callbacks (console widget,
+        player-learning, status) marshaled onto the tkinter thread."""
+        known = self.config.get("known_players", {})
+        service = ServerService(server_path, self.config, known_players=known)
+        service.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self.console_log(line)))
+        service.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self._scan_console_line(line)))
+        service.server_manager.add_status_callback(lambda status: self.root.after(0, lambda: self.update_server_status(status)))
+        return service
 
-    def _get_or_create_context(self, profile_id: str, server_path: Path) -> Optional[dict]:
-        """Return the registry entry for profile_id, creating it if needed.
+    def _get_or_create_context(self, profile_id: str, server_path: Path) -> Optional["ServerService"]:
+        """Return the ServerService for profile_id, creating it if needed.
 
-        If a context already exists for this profile_id but points at a
+        If a service already exists for this profile_id but points at a
         different (still-running) path -- i.e. the Server Folder was changed
         out from under a running Server -- returns None so the caller can
         refuse the change instead of silently orphaning the running process.
         """
         ctx = self.contexts.get(profile_id)
         if ctx is not None:
-            if ctx["server_manager"].server_path == server_path:
+            if ctx.server_path == server_path:
                 return ctx
-            if ctx["server_manager"].is_running():
+            if ctx.is_running():
                 return None
         ctx = self._build_context(server_path)
         self.contexts[profile_id] = ctx
@@ -2158,15 +2368,15 @@ class BedrockUpdaterApp:
             return
         ctx = self._get_or_create_context(profile_id, server_path)
         if ctx is None:
-            old_path = str(self.contexts[profile_id]["server_manager"].server_path)
+            old_path = str(self.contexts[profile_id].server_path)
             messagebox.showwarning("Server Running",
                 "The Server at the previous location is still running.\n\n"
                 "Stop it before changing the Server Folder.")
             self.server_entry.delete(0, tk.END)
             self.server_entry.insert(0, old_path)
             return
-        self.server_manager = ctx["server_manager"]
-        self.backup_manager = ctx["backup_manager"]
+        self.server_manager = ctx.server_manager
+        self.backup_manager = ctx.backup_manager
         # Force-sync the UI to this context's ACTUAL state -- it may already be
         # running (we're switching back to it), and no status-change callback
         # fires just from being reselected.
@@ -2174,7 +2384,7 @@ class BedrockUpdaterApp:
         if hasattr(self, 'console_text'):
             self.console_text.config(state=tk.NORMAL)
             self.console_text.delete(1.0, tk.END)
-            for line in ctx["console_buffer"]:
+            for line in ctx.console_snapshot():
                 self.console_text.insert(tk.END, line + "\n")
             self.console_text.see(tk.END)
             self.console_text.config(state=tk.DISABLED)
@@ -2245,7 +2455,7 @@ class BedrockUpdaterApp:
                 profile[key] = self.config[key]
 
     def on_close(self):
-        running = [(pid, ctx) for pid, ctx in self.contexts.items() if ctx["server_manager"].is_running()]
+        running = [(pid, ctx) for pid, ctx in self.contexts.items() if ctx.is_running()]
         if running:
             profiles = self.config.get("server_profiles", {})
             names = [profiles.get(pid, {}).get("name", "Server") for pid, _ in running]
@@ -2256,7 +2466,7 @@ class BedrockUpdaterApp:
                 return
             for pid, ctx in running:
                 self.log(f"Stopping '{profiles.get(pid, {}).get('name', 'Server')}' before exit...", "info")
-                ctx["server_manager"].stop()
+                ctx.stop()
         self.config["window_geometry"] = self.root.geometry()
         self.config["last_zip_path"] = self.zip_entry.get()
         self.config["last_server_path"] = self.server_entry.get()
@@ -2516,10 +2726,9 @@ class BedrockUpdaterApp:
         current_port = self.parse_server_properties(
             Path(self.server_entry.get()) / "server.properties").get("server-port", "19132")
         for pid, ctx in self.contexts.items():
-            if pid == current_profile_id or not ctx["server_manager"].is_running():
+            if pid == current_profile_id or not ctx.is_running():
                 continue
-            other_port = self.parse_server_properties(
-                ctx["server_manager"].server_path / "server.properties").get("server-port", "19132")
+            other_port = ctx.server_port()
             if other_port == current_port:
                 return self.config.get("server_profiles", {}).get(pid, {}).get("name", "another Server")
         return None
