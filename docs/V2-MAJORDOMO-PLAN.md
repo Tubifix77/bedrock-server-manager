@@ -1,12 +1,15 @@
 # Bedrock Server Manager 2.0 "Majordomo" — multi-Server, multi-Machine administration
 
-> **STATUS (2026-07-14):** **Stage 1 (Multi-Server local) is DONE and verified**, commits
-> `ee3de63`..`af5c803` on `v2-majordomo` (config v2 migration, per-profile registry, sidebar,
-> port guard + multi-stop close, backup namespacing, per-Server settings relocation — one
-> commit each, each verified before the next). Currently **paused at the Stage 1 → Stage 2
-> gate**, waiting for the user to switch the model to Opus 4.8 before any network code is
-> written. `master`/`main` and the family's live 1.0.4 laptop were never touched by any of
-> this — verification was entirely headless/scripted against scratch configs.
+> **STATUS (2026-07-14):** **Stages 1 and 2 are DONE and verified** on `v2-majordomo`.
+> Stage 1 (Multi-Server local): commits `ee3de63`..`af5c803`. Stage 2 (Host service, on
+> Opus 4.8): `b0cab88` protocol+HMAC, `38076de` ServerService, `c9dee9f` active-profile
+> callbacks, `070a804` RemoteAdminHost, `575d534` --agent + Settings Remote Administration UI.
+> Each sub-step verified with its own headless/scripted test before the next. `master`/`main`
+> and the family's live 1.0.4 laptop were never touched — all verification ran against scratch
+> configs and a fake/loopback client.
+> **Next: Stage 3 (Remote client — RemoteServerAccess + Machine connection + pairing UX +
+> remote sidebar rows).** Still Opus 4.8 territory (networking core). The host it talks to is
+> done and tested, so Stage 3 can be built + verified against a real in-process or --agent host.
 >
 > **Branching decision:** 2.0 lives on the `v2-majordomo` branch of *this same repo*, not a
 > separate repo — 2.0 is a refactor of the same single file (one file is both host and
@@ -17,9 +20,16 @@
 > split required for that.
 >
 > **To resume coding:** work on this branch, read this file + `CLAUDE.md` + the relevant
-> slices of `bedrock_updater_linux.py`, then implement **Stage 2 (Host service)** — see Build
-> stages below — and verify before touching Stage 3. No subagents needed. The laptop's live
+> slices of `bedrock_updater_linux.py`, then implement **Stage 3 (Remote client)** — see Build
+> stages below — and verify before touching Stage 4. No subagents needed. The laptop's live
 > 1.0.4 must keep working throughout — it only ever pulls tagged releases, never this branch tip.
+>
+> **Stage 2 note for Stage 3:** the wire protocol, HMAC auth, and FramedConnection primitives
+> already exist and are shared — the remote client reuses `FramedConnection` + `compute_auth`.
+> The host serves the op set implemented on `ServerService` (process/reads/writes/players/
+> gamerules/backups); **remote-triggered UPDATE is not wired yet** (the destructive
+> `perform_update` pipeline is still coupled to the progress widgets) — decouple it when the
+> remote client needs it, or leave update as a local-only action.
 >
 > **⛔ MODEL/EFFORT PLAN — the implementing session MUST honor this:**
 > - **Stage 1** → **Sonnet 5, effort `high`** (wide mechanical refactor).
@@ -228,10 +238,16 @@ docs note only (systemd/Task Scheduler), not automated in 2.0.
 > **Opus 4.8** (effort `high`) before I write any network code."* Wait for the user to confirm
 > the switch before proceeding.
 
-2. **Host service** *(Opus 4.8, effort `high`)*: protocol + auth + host loop in-process;
-   `--agent` mode; Settings "Remote Administration" section (toggle, port, token
-   display/regenerate).
-3. **Remote client**: RemoteServerAccess + Machine connection (reader thread, request/response
+2. ✅ **DONE — Host service** *(Opus 4.8, effort `high`)*: wire protocol + HMAC auth +
+   FramedConnection (`b0cab88`); widget-free ServerService (`38076de`); active-profile-guarded
+   GUI callbacks + _ensure_service so background Servers don't leak into the viewed console
+   (`c9dee9f`); RemoteAdminHost — threaded TCP server, per-conn reader+writer threads over a
+   queue, handshake w/ throttle, op dispatch to ServerService, long-op worker threads, event
+   fan-out w/ console coalescing (`070a804`); `--agent` headless mode (tkinter import guard)
+   + Settings "Remote Administration" toggle/port/token UI (`575d534`). Verified per sub-step
+   with scripted socket clients, a real `--agent` subprocess, and the in-GUI toggle.
+   Deferred: remote-triggered UPDATE (perform_update still widget-coupled).
+3. **Remote client** *(Opus 4.8, effort `high`)*: RemoteServerAccess + Machine connection (reader thread, request/response
    correlation, reconnect with backoff, `root.after` marshaling); pairing UX; remote rows in
    the sidebar. *Checkpoint: full loopback test on the dev PC.*
 4. **Fleet overview + machine page, polish, docs, packaging**: GUI-DESIGN.md new terms +
