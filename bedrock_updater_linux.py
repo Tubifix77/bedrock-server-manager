@@ -1892,6 +1892,20 @@ class BedrockUpdaterApp:
         self.contexts: Dict[str, "ServerService"] = {}
         # In-process remote-administration host (Settings > Remote Administration).
         self.remote_host: Optional[RemoteAdminHost] = None
+        # Outgoing connections to remote Machines (Stage 3): machine_id -> MachineConnection.
+        # _remote_state caches each Machine's last-known {connected, servers} for the sidebar.
+        self.connections: Dict[str, MachineConnection] = {}
+        self._remote_state: Dict[str, dict] = {}
+        # MachineConnection callbacks fire on their worker thread; tkinter is not
+        # thread-safe (root.after() from a worker raises "main thread is not in
+        # main loop" on modern Python), so workers only enqueue here and the
+        # MAIN thread drains it via a self-scheduled poll -- the robust pattern.
+        self._remote_queue: "queue.Queue" = queue.Queue()
+        # The Server currently shown in the tabs, as a uniform access object
+        # (a local ServerService or a RemoteServerAccess). active_remote is
+        # (machine_id, server_id) when remote, else None.
+        self.active_access = None
+        self.active_remote = None
 
         self.setup_logging()
         self.setup_styles()
@@ -1905,6 +1919,11 @@ class BedrockUpdaterApp:
         # Resume hosting if it was left enabled last session.
         if self.config.get("remote_admin", {}).get("enabled"):
             self.root.after(500, lambda: self.toggle_remote_admin(startup=True))
+
+        # Main-thread poller that drains remote-connection events safely.
+        self.root.after(200, self._drain_remote_queue)
+        # Open connections to any configured remote Machines.
+        self.root.after(600, self._ensure_connections)
         
         # Linux-specific startup message
         if sys.platform != "win32":
@@ -2052,50 +2071,93 @@ class BedrockUpdaterApp:
         self.sidebar_tree.bind("<<TreeviewSelect>>", self.on_sidebar_select)
         btns = ttk.Frame(parent)
         btns.pack(fill=tk.X, padx=4, pady=(0, 6))
-        ttk.Button(btns, text="➕ Server", command=self.add_server_profile).pack(fill=tk.X)
+        ttk.Button(btns, text="➕ Server", command=self.add_server_profile).pack(fill=tk.X, pady=(0, 2))
+        ttk.Button(btns, text="➕ Machine", command=self.add_machine_dialog).pack(fill=tk.X)
 
     def refresh_sidebar(self):
-        """Rebuild the Machines/Servers tree from config + live registry state."""
+        """Rebuild the Machines/Servers tree from config + live registry/connection state."""
         if not hasattr(self, 'sidebar_tree'):
             return
-        self.sidebar_tree.delete(*self.sidebar_tree.get_children())
-        machine_node = self.sidebar_tree.insert("", tk.END, iid="machine:local",
-                                                 text="🖥 This computer", open=True)
-        active_id = self.config.get("active_profile")
-        for pid, profile in self.config.get("server_profiles", {}).items():
-            running = pid in self.contexts and self.contexts[pid].is_running()
-            dot = "🟢" if running else "⚪"
-            self.sidebar_tree.insert(machine_node, tk.END, iid=f"profile:{pid}",
-                                      text=f"{dot} {profile.get('name') or 'Server'}")
-        if active_id:
-            try:
-                self.sidebar_tree.selection_set(f"profile:{active_id}")
-            except tk.TclError:
-                pass
+        self._sidebar_refreshing = True
+        try:
+            self.sidebar_tree.delete(*self.sidebar_tree.get_children())
+            # This computer + its local Server profiles.
+            local_node = self.sidebar_tree.insert("", tk.END, iid="machine:local",
+                                                   text="🖥 This computer", open=True)
+            active_id = self.config.get("active_profile")
+            for pid, profile in self.config.get("server_profiles", {}).items():
+                running = pid in self.contexts and self.contexts[pid].is_running()
+                dot = "🟢" if running else "⚪"
+                self.sidebar_tree.insert(local_node, tk.END, iid=f"profile:{pid}",
+                                         text=f"{dot} {profile.get('name') or 'Server'}")
+            # Remote Machines + their Servers.
+            for machine in self.config.get("machines", []):
+                mid = machine.get("id")
+                st = self._remote_state.get(mid, {})
+                connected = st.get("connected", False)
+                mdot = "🖥" if connected else "🖥🔴"
+                mnode = self.sidebar_tree.insert("", tk.END, iid=f"rmachine:{mid}",
+                                                 text=f"{mdot} {machine.get('name', machine.get('host'))}",
+                                                 open=True)
+                if not connected:
+                    self.sidebar_tree.insert(mnode, tk.END, iid=f"rinfo:{mid}",
+                                             text="   (connecting…)")
+                    continue
+                for sv in st.get("servers", []):
+                    dot = "🟢" if sv.get("running") else "⚪"
+                    self.sidebar_tree.insert(mnode, tk.END, iid=f"rprofile:{mid}:{sv['id']}",
+                                             text=f"{dot} {sv.get('name', 'Server')}")
+            # Restore selection highlight.
+            sel_iid = None
+            if self.active_remote:
+                sel_iid = f"rprofile:{self.active_remote[0]}:{self.active_remote[1]}"
+            elif active_id:
+                sel_iid = f"profile:{active_id}"
+            if sel_iid:
+                try:
+                    self.sidebar_tree.selection_set(sel_iid)
+                except tk.TclError:
+                    pass
+        finally:
+            self._sidebar_refreshing = False
 
     def on_sidebar_select(self, event=None):
+        if getattr(self, "_sidebar_refreshing", False):
+            return  # ignore selection changes we caused by rebuilding the tree
         sel = self.sidebar_tree.selection()
         if not sel:
             return
         iid = sel[0]
-        active_id = self.config.get("active_profile")
-        if not iid.startswith("profile:"):
-            # The Machine node itself -- no Machine/Fleet page yet (Stage 4);
-            # keep showing whichever Server is already active.
-            if active_id:
-                self.sidebar_tree.selection_set(f"profile:{active_id}")
-            return
-        new_id = iid.split(":", 1)[1]
-        if new_id == active_id:
-            return
-        if hasattr(self, 'properties_editor') and self.properties_editor.has_unsaved_changes():
-            if not messagebox.askyesno("Unsaved changes",
-                    "The Active Server Configuration has unsaved changes.\n\n"
-                    "Discard them and switch Servers?"):
-                if active_id:
-                    self.sidebar_tree.selection_set(f"profile:{active_id}")
+
+        # A local Server profile.
+        if iid.startswith("profile:"):
+            new_id = iid.split(":", 1)[1]
+            if new_id == self.config.get("active_profile") and not self.active_remote:
                 return
-        self._switch_to_profile(new_id)
+            if not self._confirm_leave_unsaved():
+                self.refresh_sidebar()
+                return
+            self._switch_to_profile(new_id)
+            return
+
+        # A remote Server.
+        if iid.startswith("rprofile:"):
+            _, mid, sid = iid.split(":", 2)
+            if self.active_remote == (mid, sid):
+                return
+            self._select_remote_server(mid, sid)
+            return
+
+        # A Machine node or the "(connecting…)" placeholder -- no page yet
+        # (Fleet/Machine page is Stage 3d-4); keep the current selection.
+        self.refresh_sidebar()
+
+    def _confirm_leave_unsaved(self) -> bool:
+        if hasattr(self, 'properties_editor') and self.properties_editor.has_unsaved_changes():
+            return messagebox.askyesno("Unsaved changes",
+                "The Active Server Configuration has unsaved changes.\n\n"
+                "Discard them and switch Servers?")
+        return True
 
     def _switch_to_profile(self, profile_id: str):
         """Point every tab at a different Server. See docs/V2-MAJORDOMO-PLAN.md,
@@ -2145,6 +2207,206 @@ class BedrockUpdaterApp:
             "known_players": {},
         }
         self._switch_to_profile(profile_id)
+
+    # ==================================================================
+    # Remote Machines: connections, events, selection (Stage 3d)
+    # ==================================================================
+    def _ensure_connections(self):
+        """Open (and keep) a MachineConnection for every configured Machine."""
+        for machine in self.config.get("machines", []):
+            mid = machine.get("id")
+            if mid and mid not in self.connections:
+                self._start_connection(machine)
+        self.refresh_sidebar()
+
+    def _start_connection(self, machine: dict):
+        mid = machine["id"]
+        self._remote_state.setdefault(mid, {"connected": False, "servers": [], "name": machine.get("name")})
+        # Callbacks run on the connection's worker thread -> only enqueue; the
+        # main-thread poller (_drain_remote_queue) does the actual UI work.
+        conn = MachineConnection(
+            machine,
+            on_event=lambda ev, m=mid: self._remote_queue.put(("event", m, ev)),
+            on_state=lambda c, d, m=mid: self._remote_queue.put(("state", m, c, d)),
+            log=lambda msg, m=mid: self._remote_queue.put(("log", m, msg)))
+        self.connections[mid] = conn
+        conn.start()
+
+    def _drain_remote_queue(self):
+        """Runs on the tkinter main thread: apply everything the connection
+        workers enqueued, then reschedule itself."""
+        try:
+            while True:
+                item = self._remote_queue.get_nowait()
+                kind = item[0]
+                if kind == "event":
+                    self._on_remote_event(item[1], item[2])
+                elif kind == "state":
+                    self._on_remote_state(item[1], item[2], item[3])
+                elif kind == "log":
+                    self.log(item[2], "info")
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+        finally:
+            self.root.after(150, self._drain_remote_queue)
+
+    def _stop_connection(self, machine_id: str):
+        conn = self.connections.pop(machine_id, None)
+        if conn:
+            conn.close()
+        self._remote_state.pop(machine_id, None)
+
+    def _on_remote_state(self, machine_id: str, connected: bool, detail: str):
+        st = self._remote_state.setdefault(machine_id, {"connected": False, "servers": [], "name": machine_id})
+        st["connected"] = connected
+        conn = self.connections.get(machine_id)
+        if connected and conn:
+            st["servers"] = conn.machine_info.get("servers", [])
+            st["name"] = conn.machine_info.get("name", st.get("name"))
+        # If the Server on-screen is on this Machine, reflect the link state.
+        if self.active_remote and self.active_remote[0] == machine_id:
+            self.update_server_status("running" if (connected and self.active_access
+                                                     and self.active_access.is_running()) else "stopped")
+        self.refresh_sidebar()
+
+    def _on_remote_event(self, machine_id: str, ev: dict):
+        etype = ev.get("event")
+        sid = ev.get("server")
+        viewing = (self.active_remote == (machine_id, sid))
+        if etype == "servers_changed":
+            self._remote_state.setdefault(machine_id, {})["servers"] = ev.get("data", {}).get("servers", [])
+            self.refresh_sidebar()
+        elif etype == "console" and viewing:
+            for line in ev.get("data", {}).get("lines", []):
+                self.console_log(line)
+        elif etype == "status":
+            running = ev.get("data", {}).get("running", False)
+            if viewing and self.active_access:
+                self.active_access.note_status(running)
+                self.update_server_status("running" if running else "stopped")
+            self.refresh_sidebar()
+        elif etype == "progress" and viewing:
+            data = ev.get("data", {})
+            pct = data.get("percent", 0)
+            self.set_progress(pct, f"{data.get('op', 'working')}… {pct:.0f}%")
+
+    def _select_remote_server(self, machine_id: str, server_id: str):
+        conn = self.connections.get(machine_id)
+        if conn is None or not conn.is_connected():
+            messagebox.showinfo("Not connected",
+                "That Machine isn't connected right now. It will keep trying in the background.")
+            self.refresh_sidebar()
+            return
+        if self.active_access is not None and self.properties_editor.has_unsaved_changes():
+            if not messagebox.askyesno("Unsaved changes",
+                    "The Active Server Configuration has unsaved changes.\n\nDiscard them and switch Servers?"):
+                self.refresh_sidebar()
+                return
+        self.active_access = RemoteServerAccess(conn, server_id)
+        self.active_remote = (machine_id, server_id)
+        self.config["active_profile"] = None  # a remote Server is selected, not a local profile
+        # Replay the remote console buffer into the widget.
+        self.console_text.config(state=tk.NORMAL)
+        self.console_text.delete(1.0, tk.END)
+        try:
+            for line in self.active_access.console_snapshot():
+                self.console_text.insert(tk.END, line + "\n")
+        except Exception:
+            pass
+        self.console_text.see(tk.END)
+        self.console_text.config(state=tk.DISABLED)
+        try:
+            self.update_server_status("running" if self.active_access.is_running() else "stopped")
+            self.update_server_info()
+        except Exception as e:
+            self.log(f"Could not load remote Server: {e}", "error")
+        self._refresh_remote_dependent_tabs()
+        self.refresh_sidebar()
+
+    def _refresh_remote_dependent_tabs(self):
+        """After selecting a remote Server, refresh the tabs that have been
+        routed through the access object; the rest show a remote placeholder."""
+        try:
+            self.refresh_worlds()
+            self.refresh_players_tab()
+            self.refresh_backups()
+        except Exception:
+            pass
+
+    def _acc(self):
+        """The Server currently on screen as a uniform access object, or None."""
+        return self.active_access
+
+    def _block_if_remote(self, what: str = "This action") -> bool:
+        """Guard for the few actions that are inherently local-machine (opening
+        folders on disk, backup cleanup, world rename/delete, running an update).
+        Returns True (and tells the user) when a remote Server is selected."""
+        if self.active_remote:
+            messagebox.showinfo("Local-only",
+                f"{what} runs on the machine that hosts the Server, so it isn't available "
+                "from here for a remote Server.\n\nDo it on that machine directly. Status, "
+                "console, start/stop, commands, worlds, players, configuration and backups "
+                "all work remotely.")
+            return True
+        return False
+
+    def add_machine_dialog(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Add Machine")
+        dlg.transient(self.root)
+        frm = ttk.Frame(dlg, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        fields = {}
+        rows = [("Name", "name", ""), ("Host / IP", "host", ""),
+                ("Port", "port", str(REMOTE_DEFAULT_PORT)), ("Pairing token", "token", "")]
+        for i, (label, key, default) in enumerate(rows):
+            ttk.Label(frm, text=label + ":").grid(row=i, column=0, sticky="e", padx=(0, 6), pady=3)
+            var = tk.StringVar(value=default)
+            ttk.Entry(frm, textvariable=var, width=28).grid(row=i, column=1, sticky="w", pady=3)
+            fields[key] = var
+        status = ttk.Label(frm, text="LAN only — enter the address + token shown on that PC's Settings.",
+                           font=("TkDefaultFont", 8), foreground="gray")
+        status.grid(row=len(rows), column=0, columnspan=2, sticky="w", pady=(6, 4))
+
+        def do_test(save_after=False):
+            host = fields["host"].get().strip()
+            token = fields["token"].get().strip()
+            try:
+                port = int(fields["port"].get())
+            except ValueError:
+                status.config(text="Port must be a number.", foreground="#F44336")
+                return
+            if not host or not token:
+                status.config(text="Host and token are required.", foreground="#F44336")
+                return
+            status.config(text="Testing…", foreground="gray")
+            dlg.update_idletasks()
+
+            def worker():
+                try:
+                    conn, info = remote_connect(host, port, token, timeout=6)
+                    conn.close()
+                    self.root.after(0, lambda: on_ok(info))
+                except Exception as e:
+                    self.root.after(0, lambda: status.config(text=f"✗ {e}", foreground="#F44336"))
+
+            def on_ok(info):
+                status.config(text=f"✓ Connected to {info.get('name', host)} "
+                                   f"({len(info.get('servers', []))} Server(s)).", foreground="#4CAF50")
+                if save_after:
+                    m = self.add_machine(fields["name"].get(), host, port, token)
+                    self._start_connection(m)
+                    self.refresh_sidebar()
+                    dlg.destroy()
+            threading.Thread(target=worker, daemon=True).start()
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=len(rows) + 1, column=0, columnspan=2, pady=(8, 0))
+        ttk.Button(btns, text="Test connection", command=lambda: do_test(False)).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btns, text="Save", command=lambda: do_test(True), style="Primary.TButton").pack(side=tk.LEFT, padx=3)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=3)
 
     def setup_main_tab(self):
         self.main_tab.columnconfigure(0, weight=1)
@@ -2393,17 +2655,21 @@ class BedrockUpdaterApp:
         self.world_info_label.grid(row=3, column=0, sticky="w")
     
     def refresh_world_combo(self):
-        """Fill the Active World dropdown from the Server's worlds folder."""
+        """Fill the Active World dropdown from the Server (local or remote)."""
         if not hasattr(self, 'world_combo'):
             return
-        server_path = self.server_entry.get()
-        if not server_path or not Path(server_path).exists():
+        acc = self.active_access
+        if acc is None:
             self.world_combo.config(values=[])
             self.world_combo.set("")
             return
-        worlds = [w["name"] for w in get_world_info(Path(server_path))]
-        props = self.parse_server_properties(Path(server_path) / "server.properties")
-        current = props.get("level-name", "")
+        try:
+            worlds = [w["name"] for w in acc.list_worlds()]
+            current = acc.get_active_world()
+        except Exception:
+            self.world_combo.config(values=[])
+            self.world_combo.set("")
+            return
         if current and current not in worlds:
             worlds = worlds + [current]  # created but not generated yet
         # Plain world names; the dropdown's selected value IS the active one
@@ -2413,13 +2679,15 @@ class BedrockUpdaterApp:
 
     def set_active_world(self, new_name: str) -> bool:
         """Point level-name at a world folder; takes effect on next Server start."""
-        server_path = self.server_entry.get()
-        if not server_path or not new_name:
+        acc = self.active_access
+        if acc is None or not new_name:
             return False
-        props_path = Path(server_path) / "server.properties"
-        props = self.parse_server_properties(props_path)
-        props["level-name"] = new_name
-        if self.save_server_properties(props_path, props):
+        try:
+            ok = acc.set_active_world(new_name)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not update the Active World:\n{e}")
+            return False
+        if ok:
             self.log(f"Active World set to: {new_name} (takes effect on next start)", "success")
             if hasattr(self, 'properties_editor'):
                 self.properties_editor.load_properties()
@@ -2432,7 +2700,8 @@ class BedrockUpdaterApp:
         new_name = self.world_combo.get()
         if not new_name:
             return
-        if self.server_manager and self.server_manager.is_running():
+        acc = self.active_access
+        if acc and acc.is_running():
             messagebox.showwarning("Server Running", "Stop the Server before switching the Active World.")
             self.refresh_world_combo()
             return
@@ -2444,21 +2713,23 @@ class BedrockUpdaterApp:
             messagebox.showwarning("Warning", "No World selected.")
             return
         name = str(self.world_tree.item(selected[0])["values"][0])
-        server_path = self.server_entry.get()
-        if not server_path:
+        acc = self.active_access
+        if acc is None:
             return
-        props = self.parse_server_properties(Path(server_path) / "server.properties")
-        if name == props.get("level-name"):
-            self.log(f"'{name}' is already the Active World", "info")
-            return
-        if self.server_manager and self.server_manager.is_running():
+        try:
+            if name == acc.get_active_world():
+                self.log(f"'{name}' is already the Active World", "info")
+                return
+        except Exception:
+            pass
+        if acc.is_running():
             # Explicit switch action: confirm, then stop nicely -> switch -> start again.
             if not messagebox.askyesno("Switch World",
                     f"The Server is running.\n\nStop it nicely, switch to '{name}', and start it again?"):
                 return
             self.log(f"Switching to '{name}': stopping the running Server...", "info")
-            def do_switch():
-                self.server_manager.stop()
+            def do_switch(a=acc):
+                a.stop()
                 self.root.after(0, lambda: self._finish_world_switch(name))
             threading.Thread(target=do_switch, daemon=True).start()
         else:
@@ -2477,11 +2748,11 @@ class BedrockUpdaterApp:
             self.start_server()
 
     def create_new_world(self):
-        server_path = self.server_entry.get()
-        if not server_path or not Path(server_path).exists():
-            messagebox.showwarning("Warning", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+        acc = self.active_access
+        if acc is None:
+            messagebox.showwarning("Warning", "No Server selected.")
             return
-        if self.server_manager and self.server_manager.is_running():
+        if acc.is_running():
             messagebox.showwarning("Server Running", "Stop the Server before creating a new World.")
             return
         name = simpledialog.askstring("Create New World", "Name of the new World:", parent=self.root)
@@ -2491,7 +2762,10 @@ class BedrockUpdaterApp:
         if not name or any(c in name for c in '/\\:*?"<>|'):
             messagebox.showerror("Invalid Name", "The World name is empty or contains invalid characters.")
             return
-        existing = [w["name"] for w in get_world_info(Path(server_path))]
+        try:
+            existing = [w["name"] for w in acc.list_worlds()]
+        except Exception:
+            existing = []
         if name in existing:
             if not messagebox.askyesno("World Exists", f"'{name}' already exists.\n\nSet it as the Active World instead?"):
                 return
@@ -2501,14 +2775,14 @@ class BedrockUpdaterApp:
             if name not in existing:
                 # Soft link: offer to name the Server after the World, but only while it
                 # still carries the stock name (never overwrite a name the user chose).
-                props = self.parse_server_properties(Path(server_path) / "server.properties")
+                props = acc.read_properties()
                 if props.get("server-name", "").strip() in ("", "Dedicated Server"):
                     if messagebox.askyesno("Name the Server too?",
                             "Your Server still has the stock name 'Dedicated Server' — that's the name\n"
                             "players see in their server list when they connect.\n\n"
                             f"Name the Server '{name}' as well?"):
                         props["server-name"] = name
-                        self.save_server_properties(Path(server_path) / "server.properties", props)
+                        acc.write_properties(props)
                         self.update_server_info()
                 messagebox.showinfo("World Created",
                     f"'{name}' is now the Active World.\n\n"
@@ -2519,6 +2793,8 @@ class BedrockUpdaterApp:
                 self.properties_editor.load_properties()
 
     def rename_selected_world(self):
+        if self._block_if_remote("Renaming a World"):
+            return
         selected = self.world_tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "No World selected.")
@@ -2527,7 +2803,7 @@ class BedrockUpdaterApp:
         server_path = self.server_entry.get()
         if not server_path:
             return
-        if self.server_manager and self.server_manager.is_running():
+        if self.active_access and self.active_access.is_running():
             messagebox.showwarning("Server Running", "Stop the Server before renaming a World.")
             return
         new_name = simpledialog.askstring("Rename World", f"New name for '{old_name}':", parent=self.root)
@@ -2559,6 +2835,8 @@ class BedrockUpdaterApp:
         self.refresh_world_combo()
 
     def delete_selected_world(self):
+        if self._block_if_remote("Deleting a World"):
+            return
         selected = self.world_tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "No World selected.")
@@ -2571,7 +2849,7 @@ class BedrockUpdaterApp:
         if name == props.get("level-name"):
             messagebox.showwarning("Active World", "You can't delete the Active World. Switch to another World first.")
             return
-        if self.server_manager and self.server_manager.is_running():
+        if self.active_access and self.active_access.is_running():
             messagebox.showwarning("Server Running", "Stop the Server before deleting a World.")
             return
         if not messagebox.askyesno("Delete World",
@@ -2675,30 +2953,36 @@ class BedrockUpdaterApp:
             messagebox.showerror("Players", f"Could not save {filename}:\n{e}")
 
     def refresh_players_tab(self):
-        if not hasattr(self, 'allow_tree') or not hasattr(self, 'server_entry'):
+        if not hasattr(self, 'allow_tree'):
             return
-        server_path = self.server_entry.get()
-        props = {}
-        if server_path and Path(server_path).exists():
-            props = self.parse_server_properties(Path(server_path))
-        self.allowlist_var.set(props.get("allow-list", "false").lower() == "true")
+        acc = self.active_access
         for i in self.allow_tree.get_children():
             self.allow_tree.delete(i)
-        allow_entries = self._load_player_json("allowlist.json")
+        for i in self.perm_tree.get_children():
+            self.perm_tree.delete(i)
+        if acc is None:
+            self.perm_player_combo.config(values=[])
+            self.gm_player_combo.config(values=[])
+            self.gm_force_warn.config(text="")
+            return
+        try:
+            data = acc.get_players()
+        except Exception:
+            return
+        self.allowlist_var.set(bool(data.get("allow_list_enabled")))
+        allow_entries = data.get("allowlist", [])
         for e in allow_entries:
             self.allow_tree.insert("", tk.END, values=(e.get("name", ""), e.get("xuid", ""),
                                                        "yes" if e.get("ignoresPlayerLimit") else "no"))
-        known = self.config.get("known_players", {})
+        known = data.get("known_players", {})
         by_xuid = {str(v): k for k, v in known.items()}
-        for i in self.perm_tree.get_children():
-            self.perm_tree.delete(i)
-        for e in self._load_player_json("permissions.json"):
+        for e in data.get("permissions", []):
             x = str(e.get("xuid", ""))
             self.perm_tree.insert("", tk.END, values=(by_xuid.get(x, "(unknown)"), x, e.get("permission", "member")))
         names = sorted({n for n in list(known.keys()) + [a.get("name", "") for a in allow_entries] if n}, key=str.lower)
         self.perm_player_combo.config(values=names)
         self.gm_player_combo.config(values=names)
-        fg = props.get("force-gamemode", "false").lower() == "true"
+        fg = bool(data.get("force_gamemode"))
         self.gm_force_warn.config(text=("⚠ force-gamemode=true resets everyone to the default mode on every join — "
                                         "set it to false in 📝 Configuration to allow mixed modes." if fg else ""))
 
@@ -2755,47 +3039,42 @@ class BedrockUpdaterApp:
                     "Names appear when someone joins while the Server runs in this app."))
 
     def toggle_allowlist_enforcement(self):
-        server_path = self.server_entry.get()
-        if not server_path or not Path(server_path).exists():
+        acc = self.active_access
+        if acc is None:
             self.allowlist_var.set(False)
-            messagebox.showwarning("Players", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+            messagebox.showwarning("Players", "No Server selected.")
             return
         enable = self.allowlist_var.get()
-        if enable and not self._load_player_json("allowlist.json"):
-            if not messagebox.askyesno("Empty allowlist",
-                    "The allowlist is empty — with enforcement ON, nobody can join until you add players.\n\nTurn it on anyway?"):
-                self.allowlist_var.set(False)
-                return
-        props_path = Path(server_path) / "server.properties"
-        props = self.parse_server_properties(props_path)
-        props["allow-list"] = "true" if enable else "false"
-        self.save_server_properties(props_path, props)
-        if self.server_manager and self.server_manager.is_running():
-            self.server_manager.send_command("allowlist " + ("on" if enable else "off"))
+        try:
+            if enable and not acc.get_players().get("allowlist"):
+                if not messagebox.askyesno("Empty allowlist",
+                        "The allowlist is empty — with enforcement ON, nobody can join until you add players.\n\nTurn it on anyway?"):
+                    self.allowlist_var.set(False)
+                    return
+            acc.set_allowlist_enforcement(enable)
+        except Exception as e:
+            messagebox.showerror("Players", str(e))
+            self.refresh_players_tab()
+            return
         self.log(f"Allowlist enforcement {'ON' if enable else 'OFF'}", "success")
 
     def add_allowlist_player(self):
-        if not self._player_json_path("allowlist.json"):
-            messagebox.showwarning("Players", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+        acc = self.active_access
+        if acc is None:
+            messagebox.showwarning("Players", "No Server selected.")
             return
         name = simpledialog.askstring("Add player", "Player gamertag (exact Xbox name):", parent=self.root)
-        if not name:
+        if not name or not name.strip():
             return
         name = name.strip()
-        if not name:
+        try:
+            if any(e.get("name", "").lower() == name.lower() for e in acc.get_players().get("allowlist", [])):
+                messagebox.showinfo("Already listed", f"'{name}' is already on the allowlist.")
+                return
+            acc.add_allowlist_player(name)
+        except Exception as e:
+            messagebox.showerror("Players", str(e))
             return
-        entries = self._load_player_json("allowlist.json")
-        if any(e.get("name", "").lower() == name.lower() for e in entries):
-            messagebox.showinfo("Already listed", f"'{name}' is already on the allowlist.")
-            return
-        entry = {"ignoresPlayerLimit": False, "name": name}
-        xuid = self.config.get("known_players", {}).get(name)
-        if xuid:
-            entry["xuid"] = str(xuid)
-        entries.append(entry)
-        self._save_player_json("allowlist.json", entries)
-        if self.server_manager and self.server_manager.is_running():
-            self.server_manager.send_command(f'allowlist add "{name}"')
         self.log(f"Added '{name}' to the allowlist", "success")
         self.refresh_players_tab()
 
@@ -2804,27 +3083,37 @@ class BedrockUpdaterApp:
         if not sel:
             messagebox.showwarning("Players", "Select an allowlist entry to remove.")
             return
+        acc = self.active_access
+        if acc is None:
+            return
         name = str(self.allow_tree.item(sel[0])["values"][0])
-        entries = [e for e in self._load_player_json("allowlist.json") if e.get("name") != name]
-        self._save_player_json("allowlist.json", entries)
-        if self.server_manager and self.server_manager.is_running():
-            self.server_manager.send_command(f'allowlist remove "{name}"')
+        try:
+            acc.remove_allowlist_player(name)
+        except Exception as e:
+            messagebox.showerror("Players", str(e))
+            return
         self.log(f"Removed '{name}' from the allowlist", "info")
         self.refresh_players_tab()
 
     def set_player_permission(self, level: str):
-        if not self._player_json_path("permissions.json"):
-            messagebox.showwarning("Players", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+        acc = self.active_access
+        if acc is None:
+            messagebox.showwarning("Players", "No Server selected.")
             return
         name = self.perm_player_combo.get().strip()
         if not name:
             messagebox.showwarning("Players", "Pick or type a player name first.")
             return
-        xuid = self.config.get("known_players", {}).get(name)
+        try:
+            known = acc.get_players().get("known_players", {})
+        except Exception as e:
+            messagebox.showerror("Players", str(e))
+            return
+        xuid = known.get(name)
         if not xuid:
             xuid = simpledialog.askstring("XUID needed",
                 f"No XUID known for '{name}' yet — Bedrock keys roles by XUID.\n"
-                "Easiest: Cancel, and have them join once while this app runs.\n"
+                "Easiest: Cancel, and have them join once while the Server runs.\n"
                 "Or enter their XUID manually:", parent=self.root)
             if not xuid:
                 return
@@ -2832,13 +3121,14 @@ class BedrockUpdaterApp:
             if not xuid.isdigit():
                 messagebox.showerror("Players", "A XUID is a number.")
                 return
-            self.config.setdefault("known_players", {})[name] = xuid
-            save_config(self.config)
-        entries = [e for e in self._load_player_json("permissions.json") if str(e.get("xuid")) != str(xuid)]
-        entries.append({"permission": level, "xuid": str(xuid)})
-        self._save_player_json("permissions.json", entries)
-        if self.server_manager and self.server_manager.is_running():
-            self.server_manager.send_command("permission reload")
+            if not self.active_remote:  # remember it locally for convenience
+                self.config.setdefault("known_players", {})[name] = xuid
+                save_config(self.config)
+        try:
+            acc.set_permission(str(xuid), level)
+        except Exception as e:
+            messagebox.showerror("Players", str(e))
+            return
         self.log(f"Role for '{name}' set to {level}", "success")
         self.refresh_players_tab()
 
@@ -2847,16 +3137,21 @@ class BedrockUpdaterApp:
         if not sel:
             messagebox.showwarning("Players", "Select a role entry to remove.")
             return
+        acc = self.active_access
+        if acc is None:
+            return
         xuid = str(self.perm_tree.item(sel[0])["values"][1])
-        entries = [e for e in self._load_player_json("permissions.json") if str(e.get("xuid")) != xuid]
-        self._save_player_json("permissions.json", entries)
-        if self.server_manager and self.server_manager.is_running():
-            self.server_manager.send_command("permission reload")
+        try:
+            acc.remove_permission(xuid)
+        except Exception as e:
+            messagebox.showerror("Players", str(e))
+            return
         self.log("Removed role entry (player is back at the default level)", "info")
         self.refresh_players_tab()
 
     def set_player_gamemode(self, mode: str):
-        if not (self.server_manager and self.server_manager.is_running()):
+        acc = self.active_access
+        if acc is None or not acc.is_running():
             messagebox.showwarning("Server stopped",
                 "Start the Server first — game mode is set live, per player, while they're online.")
             return
@@ -2864,19 +3159,26 @@ class BedrockUpdaterApp:
         if not name:
             messagebox.showwarning("Players", "Pick or type a player name first.")
             return
-        self.server_manager.send_command(f'gamemode {mode} "{name}"')
+        try:
+            acc.set_gamemode(name, mode)
+        except Exception as e:
+            messagebox.showerror("Players", str(e))
+            return
         self.console_log(f'> gamemode {mode} "{name}"')
         self.log(f"Requested {mode} for '{name}' — they must be online (check the console reply)", "info")
 
     def open_gamerules_dialog(self):
-        server_path = self.server_entry.get()
-        if not server_path or not Path(server_path).exists():
-            messagebox.showwarning("Gamerules", "No Server configured. Set the Server Folder in ⚙️ Settings first.")
+        acc = self.active_access
+        if acc is None:
+            messagebox.showwarning("Gamerules", "No Server selected.")
             return
-        props = self.parse_server_properties(Path(server_path))
-        active = props.get("level-name", "")
-        current = read_world_gamerules(Path(server_path) / "worlds" / active)
-        running = bool(self.server_manager and self.server_manager.is_running())
+        try:
+            active = acc.get_active_world()
+            current = acc.read_gamerules()
+        except Exception as e:
+            messagebox.showerror("Gamerules", f"Could not read gamerules:\n{e}")
+            return
+        running = bool(acc.is_running())
         dlg = tk.Toplevel(self.root)
         dlg.title(f"Gamerules — {active}")
         dlg.transient(self.root)
@@ -2907,7 +3209,8 @@ class BedrockUpdaterApp:
         ttk.Button(frm, text="Close", command=dlg.destroy).grid(row=r + 1, column=0, columnspan=3, pady=(10, 0))
 
     def _send_gamerule(self, rule: str, var, kind: str):
-        if not (self.server_manager and self.server_manager.is_running()):
+        acc = self.active_access
+        if acc is None or not acc.is_running():
             messagebox.showwarning("Server stopped", "Start the Server to change gamerules.")
             return
         try:
@@ -2915,7 +3218,11 @@ class BedrockUpdaterApp:
         except Exception:
             messagebox.showerror("Gamerules", "Enter a number between 0 and 100.")
             return
-        self.server_manager.send_command(f"gamerule {rule} {value}")
+        try:
+            acc.send_gamerule(rule, value)
+        except Exception as e:
+            messagebox.showerror("Gamerules", str(e))
+            return
         self.console_log(f"> gamerule {rule} {value}")
         self.log(f"gamerule {rule} = {value}", "success")
 
@@ -3278,6 +3585,9 @@ class BedrockUpdaterApp:
             return
         self.server_manager = ctx.server_manager
         self.backup_manager = ctx.backup_manager
+        # This local ServerService is now the uniform access object the tabs use.
+        self.active_access = ctx
+        self.active_remote = None
         # Force-sync the UI to this context's ACTUAL state -- it may already be
         # running (we're switching back to it), and no status-change callback
         # fires just from being reselected.
@@ -3316,12 +3626,20 @@ class BedrockUpdaterApp:
         self.refresh_sidebar()
 
     def update_network_info(self):
-        server_path = self.server_entry.get()
-        if server_path:
-            props = self.parse_server_properties(Path(server_path) / "server.properties")
-            port = props.get("server-port", "19132")
-            ip = get_local_ip()
-            self.network_label.config(text=f"Network: {ip}:{port}")
+        acc = self.active_access
+        if acc is None:
+            self.network_label.config(text="Network: —")
+            return
+        try:
+            port = acc.read_properties().get("server-port", "19132")
+        except Exception:
+            port = "19132"
+        # Local: this machine's LAN IP. Remote: the Machine's host address.
+        if self.active_remote:
+            host = self.connections.get(self.active_remote[0]).host if self.active_remote[0] in self.connections else "?"
+            self.network_label.config(text=f"Network: {host}:{port} (remote)")
+        else:
+            self.network_label.config(text=f"Network: {get_local_ip()}:{port}")
     
     def _sync_flat_settings_into_active_profile(self):
         """Mirror the flat 'current profile' keys into server_profiles[active_profile].
@@ -3359,6 +3677,9 @@ class BedrockUpdaterApp:
         if self.remote_host:
             self.remote_host.stop()
             self.remote_host = None
+        for conn in list(self.connections.values()):
+            conn.close()
+        self.connections.clear()
         running = [(pid, ctx) for pid, ctx in self.contexts.items() if ctx.is_running()]
         if running:
             profiles = self.config.get("server_profiles", {})
@@ -3449,35 +3770,41 @@ class BedrockUpdaterApp:
             self.properties_editor.load_properties()
     
     def update_server_info(self):
-        server_path_str = self.server_entry.get()
-        if not server_path_str or not Path(server_path_str).exists():
-            self.info_text.config(text="No Server selected — set the Server Folder in ⚙️ Settings.")
+        acc = self.active_access
+        if acc is None:
+            self.info_text.config(text="No Server selected — pick one in the sidebar, "
+                                       "or set a Server Folder in ⚙️ Settings.")
             return
-        server_path = Path(server_path_str)
-        props = self.parse_server_properties(server_path)
-        worlds = get_world_info(server_path)
-        installed = detect_server_version(server_path)
-        active = props.get("level-name", "Bedrock Level")
+        try:
+            info = acc.get_info()
+            worlds = acc.list_worlds()
+        except Exception as e:
+            self.info_text.config(text=f"Could not read this Server: {e}")
+            return
+        installed = info.get("version", "Unknown")
+        active = info.get("active_world", "")
         world_versions = {w["name"]: w["version"] for w in worlds}
         world_line = f"Active World: {active}"
-        if active not in world_versions:
+        if active and active not in world_versions:
             world_line += " (not generated yet — created on first start)"
-        elif world_versions[active] != "Unknown":
+        elif active and world_versions.get(active) not in (None, "Unknown"):
             world_line += f" — last run on {world_versions[active]} (won't load on older versions)"
             iv, wv = parse_version_tuple(installed), parse_version_tuple(world_versions[active])
             if iv and wv and wv > iv:
                 world_line += "  ⚠ NEWER than installed Bedrock Server Version!"
+        where = " (remote)" if self.active_remote else ""
         info_lines = [
-            f"Server Name: {props.get('server-name', 'Unknown')}",
+            f"Server Name: {info.get('name', 'Unknown')}{where}",
             f"Bedrock Server Version: {installed}",
             world_line,
-            f"Game Mode: {props.get('gamemode', 'Unknown')} | Difficulty: {props.get('difficulty', 'Unknown')}",
-            f"Max Players: {props.get('max-players', 'Unknown')} | Port: {props.get('server-port', '19132')}",
-            f"Worlds: {len(worlds)} | Total size: {format_size(get_folder_size(server_path / 'worlds'))}",
+            f"Game Mode: {info.get('gamemode', 'Unknown')} | Difficulty: {info.get('difficulty', 'Unknown')}",
+            f"Max Players: {info.get('max_players', 'Unknown')} | Port: {info.get('port', '19132')}",
+            f"Worlds: {info.get('worlds_count', len(worlds))} | Total size: {info.get('worlds_size', '?')}",
         ]
         self.info_text.config(text="\n".join(info_lines))
         self.refresh_world_combo()
         self.refresh_backup_header()
+        self.update_network_info()
         if hasattr(self, 'update_installed_label'):
             self.update_installed_label.config(text=f"Installed Bedrock Server Version: {installed}")
     
@@ -3485,6 +3812,8 @@ class BedrockUpdaterApp:
         return [item for item, var in self.preserve_vars.items() if var.get()]
     
     def dry_run(self):
+        if self._block_if_remote("Updating the Bedrock Server Version"):
+            return
         if not self.zip_entry.get() or not self.server_entry.get():
             messagebox.showwarning("Warning", "Please select both a ZIP file and server folder.")
             return
@@ -3503,6 +3832,8 @@ class BedrockUpdaterApp:
         self.log("Dry run complete.", "info")
     
     def start_update(self):
+        if self._block_if_remote("Updating the Bedrock Server Version"):
+            return
         if self.is_updating:
             return
         server_dir = Path(self.server_entry.get())
@@ -3638,69 +3969,89 @@ class BedrockUpdaterApp:
         return None
 
     def start_server(self):
-        if not self.server_manager:
-            messagebox.showwarning("Warning", "No server configured.")
+        acc = self.active_access
+        if acc is None:
+            messagebox.showwarning("Warning", "No server selected.")
             return
-        if self.server_manager.is_running():
+        if acc.is_running():
             return
-        conflict = self._find_port_conflict()
-        if conflict:
-            messagebox.showerror("Port already in use",
-                f"'{conflict}' is already running on this same port.\n\n"
-                "Stop it first, or change one Server's server-port in 📝 Configuration.")
-            return
+        # Port-collision guard applies to local Servers (the host enforces its own).
+        if not self.active_remote:
+            conflict = self._find_port_conflict()
+            if conflict:
+                messagebox.showerror("Port already in use",
+                    f"'{conflict}' is already running on this same port.\n\n"
+                    "Stop it first, or change one Server's server-port in 📝 Configuration.")
+                return
         self.console_text.config(state=tk.NORMAL)
         self.console_text.delete(1.0, tk.END)
         self.console_text.config(state=tk.DISABLED)
-        if self.server_manager.start():
-            self.log("Server started", "success")
-        else:
-            self.log("Failed to start server", "error")
-    
+        self.log("Starting server...", "info")
+        def do_start(a=acc):
+            try:
+                ok = a.start()
+            except Exception as e:
+                self.root.after(0, lambda: self.log(f"Failed to start server: {e}", "error"))
+                return
+            self.root.after(0, lambda: self.log("Server started" if ok else "Failed to start server",
+                                                 "success" if ok else "error"))
+        threading.Thread(target=do_start, daemon=True).start()
+
     def stop_server(self):
-        if not self.server_manager or not self.server_manager.is_running():
+        acc = self.active_access
+        if acc is None or not acc.is_running():
             return
         self.log("Stopping server...", "info")
-        threading.Thread(target=lambda: self.server_manager.stop(), daemon=True).start()
-    
+        threading.Thread(target=lambda a=acc: a.stop(), daemon=True).start()
+
     def restart_server(self):
-        if not self.server_manager:
+        acc = self.active_access
+        if acc is None:
             return
-        def do_restart():
-            if self.server_manager.is_running():
-                self.server_manager.stop()
-                time.sleep(2)
-            self.root.after(0, self.start_server)
         self.log("Restarting server...", "info")
+        def do_restart(a=acc):
+            try:
+                a.restart()
+            except Exception as e:
+                self.root.after(0, lambda: self.log(f"Restart failed: {e}", "error"))
         threading.Thread(target=do_restart, daemon=True).start()
-    
+
     def send_server_command(self, event=None):
-        if not self.server_manager or not self.server_manager.is_running():
+        acc = self.active_access
+        if acc is None or not acc.is_running():
             return
         cmd = self.cmd_entry.get().strip()
         if cmd:
             self.console_log(f"> {cmd}")
-            self.server_manager.send_command(cmd)
+            acc.send_command(cmd)
             self.cmd_entry.delete(0, tk.END)
-    
+
     def quick_command(self, cmd: str):
-        if self.server_manager and self.server_manager.is_running():
+        acc = self.active_access
+        if acc and acc.is_running():
             self.console_log(f"> {cmd}")
-            self.server_manager.send_command(cmd)
+            acc.send_command(cmd)
     
     def copy_server_ip(self):
-        server_path = self.server_entry.get()
-        if server_path:
-            props = self.parse_server_properties(Path(server_path) / "server.properties")
-            port = props.get("server-port", "19132")
+        acc = self.active_access
+        if acc is None:
+            return
+        try:
+            port = acc.read_properties().get("server-port", "19132")
+        except Exception:
+            port = "19132"
+        if self.active_remote and self.active_remote[0] in self.connections:
+            ip = self.connections[self.active_remote[0]].host
+        else:
             ip = get_local_ip()
-            self.root.clipboard_clear()
-            self.root.clipboard_append(f"{ip}:{port}")
-            self.log(f"Copied to clipboard: {ip}:{port}", "info")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(f"{ip}:{port}")
+        self.log(f"Copied to clipboard: {ip}:{port}", "info")
     
     def manual_backup(self):
-        if not self.backup_manager:
-            messagebox.showwarning("Warning", "No server configured.")
+        acc = self.active_access
+        if acc is None:
+            messagebox.showwarning("Warning", "No Server selected.")
             return
         preserve = self.get_preserve_list()
         if not preserve:
@@ -3708,12 +4059,12 @@ class BedrockUpdaterApp:
             return
         self.log("Creating manual backup...", "info")
         self.set_progress(0, "Backing up...")
-        def do_backup():
+        def do_backup(a=acc):
             try:
-                success, path, backed_up = self.backup_manager.create_backup(
+                success, path, backed_up = a.create_backup(
                     preserve, compress=self.config.get("compress_backups", False),
                     progress_callback=lambda p: self.root.after(0, lambda: self.set_progress(p)))
-                self.root.after(0, lambda: self.log(f"Backup created: {path.name}", "success"))
+                self.root.after(0, lambda: self.log(f"Backup created: {Path(str(path)).name}", "success"))
                 self.root.after(0, lambda: self.set_progress(100, "Backup complete"))
                 self.root.after(0, self.refresh_backups)
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Backup created:\n{path}"))
@@ -3726,75 +4077,102 @@ class BedrockUpdaterApp:
         """Name the Server these backups belong to, so it's clear what gets backed up."""
         if not hasattr(self, 'backup_header_label'):
             return
-        server_path = self.server_entry.get()
-        if server_path and Path(server_path).exists():
-            props = self.parse_server_properties(Path(server_path))
-            name = props.get("server-name", Path(server_path).name)
-            # .backup_dir (attribute), not get_backup_dir() -- just displaying
-            # the path shouldn't have the side effect of creating the folder.
-            stored_in = self.backup_manager.backup_dir if self.backup_manager else \
-                Path(server_path).parent / "bedrock_backups" / Path(server_path).name
-            self.backup_header_label.config(
-                text=f"Backups for: {name}  —  stored in {stored_in}")
-        else:
+        acc = self.active_access
+        if acc is None:
             self.backup_header_label.config(text="Backups for: (no Server selected)")
+            return
+        try:
+            name = acc.get_info().get("name", "Server")
+        except Exception:
+            name = "Server"
+        if self.active_remote:
+            mname = self._remote_state.get(self.active_remote[0], {}).get("name", "remote Machine")
+            self.backup_header_label.config(text=f"Backups for: {name}  —  stored on {mname}")
+        elif self.backup_manager:
+            # .backup_dir (attribute), not get_backup_dir() -- displaying shouldn't
+            # have the side effect of creating the folder.
+            self.backup_header_label.config(text=f"Backups for: {name}  —  stored in {self.backup_manager.backup_dir}")
+        else:
+            self.backup_header_label.config(text=f"Backups for: {name}")
 
     def refresh_backups(self):
-        if not self.backup_manager:
+        acc = self.active_access
+        if acc is None:
             return
         for item in self.backup_tree.get_children():
             self.backup_tree.delete(item)
-        for backup in self.backup_manager.list_backups():
+        try:
+            backups = acc.list_backups()
+        except Exception:
+            return
+        for backup in backups:
             self.backup_tree.insert("", tk.END, values=(backup["name"], backup["date"], backup["size"]),
                                    tags=(str(backup["path"]),))
     
-    def restore_selected_backup(self):
+    def _selected_backup_path(self):
+        """The full path (host-side for remote) stored on the selected row's tag."""
         selected = self.backup_tree.selection()
         if not selected:
+            return None, None
+        item = self.backup_tree.item(selected[0])
+        tags = self.backup_tree.item(selected[0], "tags")
+        return (tags[0] if tags else item["values"][0]), item["values"][0]
+
+    def restore_selected_backup(self):
+        acc = self.active_access
+        if acc is None:
+            return
+        backup_path, backup_name = self._selected_backup_path()
+        if not backup_path:
             messagebox.showwarning("Warning", "No backup selected.")
             return
-        item = self.backup_tree.item(selected[0])
-        backup_name = item["values"][0]
-        backup_path = self.backup_manager.get_backup_dir() / backup_name
         if not messagebox.askyesno("Confirm Restore", f"Restore from backup:\n{backup_name}\n\nThis will overwrite current files!"):
             return
-        if self.server_manager and self.server_manager.is_running():
+        if acc.is_running():
             if not messagebox.askyesno("Server Running", "Stop server to restore?"):
                 return
-            self.server_manager.stop()
+            acc.stop()
         self.log(f"Restoring from {backup_name}...", "info")
-        def do_restore():
+        def do_restore(a=acc):
             try:
-                success, restored = self.backup_manager.restore_backup(backup_path)
+                success, restored = a.restore_backup(backup_path)
                 self.root.after(0, lambda: self.log(f"Restored {len(restored)} items", "success"))
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Restored {len(restored)} items"))
             except Exception as e:
                 self.root.after(0, lambda: self.log(f"Restore failed: {str(e)}", "error"))
                 self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
         threading.Thread(target=do_restore, daemon=True).start()
-    
+
     def delete_selected_backup(self):
-        selected = self.backup_tree.selection()
-        if not selected:
+        acc = self.active_access
+        if acc is None:
             return
-        item = self.backup_tree.item(selected[0])
-        backup_name = item["values"][0]
+        backup_path, backup_name = self._selected_backup_path()
+        if not backup_path:
+            return
         if not messagebox.askyesno("Confirm Delete", f"Delete backup:\n{backup_name}?"):
             return
-        backup_path = self.backup_manager.get_backup_dir() / backup_name
-        if self.backup_manager.delete_backup(backup_path):
+        try:
+            ok = acc.delete_backup(backup_path)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            return
+        if ok:
             self.log(f"Deleted: {backup_name}", "info")
             self.refresh_backups()
-    
+
     def open_selected_backup(self):
-        selected = self.backup_tree.selection()
-        if selected:
-            item = self.backup_tree.item(selected[0])
-            backup_path = self.backup_manager.get_backup_dir() / item["values"][0]
-            if backup_path.exists():
-                open_folder(backup_path if backup_path.is_dir() else backup_path.parent)
-    
+        if self._block_if_remote("Opening a backup folder"):
+            return
+        backup_path, _ = self._selected_backup_path()
+        if backup_path:
+            p = Path(backup_path)
+            if p.exists():
+                open_folder(p if p.is_dir() else p.parent)
+
     def cleanup_backups(self):
+        if self._block_if_remote("Cleanup of old backups"):
+            return
         if not self.backup_manager:
             return
         max_backups = self.config.get("max_backups", 5)
@@ -3802,23 +4180,28 @@ class BedrockUpdaterApp:
         self.log(f"Cleaned up {deleted} old backup(s)", "info")
         self.refresh_backups()
         messagebox.showinfo("Cleanup", f"Removed {deleted} old backup(s)")
-    
+
     def open_backup_folder(self):
+        if self._block_if_remote("Opening the backups folder"):
+            return
         if self.backup_manager:
             open_folder(self.backup_manager.get_backup_dir())
         elif self.server_entry.get():
             open_folder(Path(self.server_entry.get()).parent)
     
     def refresh_worlds(self):
-        if not self.server_entry.get():
+        acc = self.active_access
+        if acc is None:
             return
         for item in self.world_tree.get_children():
             self.world_tree.delete(item)
-        server_path = Path(self.server_entry.get())
-        props = self.parse_server_properties(server_path / "server.properties")
-        active = props.get("level-name", "")
+        try:
+            worlds_data = acc.list_worlds()
+            active = acc.get_active_world()
+        except Exception:
+            return
         existing = set()
-        for world in get_world_info(server_path):
+        for world in worlds_data:
             existing.add(world["name"])
             is_active = world["name"] == active
             self.world_tree.insert("", tk.END,
@@ -3845,6 +4228,8 @@ class BedrockUpdaterApp:
             self.world_info_label.config(text=f"Selected: {item['values'][0]}")
     
     def open_worlds_folder(self):
+        if self._block_if_remote("Opening the worlds folder"):
+            return
         server_path = self.server_entry.get()
         if server_path:
             worlds = Path(server_path) / "worlds"
@@ -3876,6 +4261,8 @@ class BedrockUpdaterApp:
         open_folder(get_config_path().parent)
     
     def open_server_folder(self):
+        if self._block_if_remote("Opening the Server folder"):
+            return
         if self.server_entry.get():
             open_folder(Path(self.server_entry.get()))
     
@@ -4033,13 +4420,17 @@ class ServerPropertiesEditor(_TkFrameBase):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def load_properties(self):
-        server_path = self.app.server_entry.get()
-        if not server_path:
+        acc = self.app.active_access
+        if acc is None:
             return
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
         self.entries = {}
-        props = self.app.parse_server_properties(Path(server_path) / "server.properties")
+        try:
+            props = acc.read_properties()
+        except Exception:
+            self._loaded_snapshot = {}
+            return
         row_index = 0
         for key, value in props.items():
             if key.lower() == "level-name":
@@ -4056,12 +4447,16 @@ class ServerPropertiesEditor(_TkFrameBase):
         self._loaded_snapshot = {k: e.get() for k, e in self.entries.items()}
 
     def save_properties(self):
-        server_path = self.app.server_entry.get()
-        if not server_path:
-            messagebox.showerror("Error", "No server folder selected!")
+        acc = self.app.active_access
+        if acc is None:
+            messagebox.showerror("Error", "No Server selected!")
             return
         new_props = {key: entry.get() for key, entry in self.entries.items()}
-        success = self.app.save_server_properties(Path(server_path) / "server.properties", new_props)
+        try:
+            success = acc.write_properties(new_props)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save properties:\n{e}")
+            return
         if success:
             self._loaded_snapshot = dict(new_props)
             self.app.log("Server properties saved successfully.", "success")
