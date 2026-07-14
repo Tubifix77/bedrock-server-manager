@@ -4,6 +4,59 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [2.0.0] "Majordomo" — 2026-07-14
+
+The app grows from managing one Server to managing a fleet — several Servers on this
+machine, or on any machine on the home network that accepts remote administration, all from
+one GUI. Full design rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md) and the build
+history in `docs/V2-MAJORDOMO-PLAN.md`.
+
+### Added
+- **Multi-Server, one app**: add as many local Servers as you like (sidebar's ➕ Server, each
+  with its own settings/backups/known players); several can run **simultaneously** — a
+  port-collision guard refuses to start two on the same port, and closing the app with several
+  running lists them all by name in one confirm before stopping them.
+- **Sidebar** (Machines → Servers) replaces the single Server-Folder assumption: a resizable
+  left pane always shows every configured Server, local and remote, with a running/stopped
+  dot; selecting one points the existing 7 tabs at it without disturbing anything else running
+  in the background.
+- **🌐 Fleet overview**: the sidebar's root shows every Server across every Machine in one
+  table — double-click to open one, or Start/Stop Selected without leaving the page.
+- **Remote administration over the LAN**: any install can host (Settings ▸ Remote
+  Administration: enable, port, pairing token with copy/regenerate) or run headless
+  (`--agent`), and any install can administer another one (sidebar's ➕ Machine: name,
+  host/IP, port, token, Test connection). A paired remote Server is driven from **every tab**
+  exactly like a local one — status, live console, start/stop/restart, commands, worlds
+  (including rename/delete), players, configuration (reads and saves), and backups. Security
+  is honest LAN-grade: an HMAC-authenticated pairing handshake, plaintext session after that —
+  documented as not internet-facing; use a VPN (Tailscale/WireGuard) to reach a Machine
+  off-LAN rather than port-forwarding.
+- **Machine page**: selecting a Machine in the sidebar shows its name/platform/version,
+  connection status, and its own Servers; remote Machines get a Remove Machine button.
+- Backups are now **namespaced per-Server** on disk so Servers sharing a parent folder never
+  mix backups — nothing existing gets moved, so a rollback to 1.0.4 still finds every backup
+  where it was.
+- Per-Server settings (backup policy, update toggles) moved off the app-level Settings tab
+  onto the Backups and Update tabs, where the data they configure actually lives.
+
+### Changed
+- Config is now schema **v2** (`server_profiles` + `active_profile` + `machines` +
+  `remote_admin`); an old 1.x config is migrated automatically on first run, with the original
+  kept as `*.v1.bak`.
+- Settings tab is now app-level only (interface prefs, Remote Administration, About); the
+  Server Folder picker there now only *relocates* the currently selected Server — adding one
+  is the sidebar's ➕ Server.
+
+### Deliberately out of scope
+- **Update stays local-only.** It wipes and replaces the entire Server install; running
+  something that destructive blind over a network link — where a dropped connection mid-copy
+  could leave a Server half-wiped with no one there to notice — isn't a risk worth taking.
+  Everything else works local or remote identically.
+- Internet exposure/TLS, cross-machine backup copies, uploading ZIPs to a host (a host
+  downloads its own updates), and autostart-at-boot automation are not part of 2.0.
+
+---
+
 ## [1.0.4] — 2026-07-13
 
 Player management and per-World gamerules — the two systems that live *outside*

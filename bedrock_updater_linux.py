@@ -52,7 +52,7 @@ import time
 # ============================================================================
 
 APP_NAME = "Bedrock Server Manager"
-APP_VERSION = "1.0.4-Linux"
+APP_VERSION = "2.0.0"
 APP_AUTHOR = "Tue Wincentz Boas - Built with Claude AI & Gemini 3"
 CONFIG_FILENAME = ".bedrock_updater_config.json"
 MINECRAFT_DOWNLOAD_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
