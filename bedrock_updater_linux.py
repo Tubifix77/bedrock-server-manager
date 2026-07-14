@@ -1762,6 +1762,115 @@ class MachineConnection:
             pass
 
 
+class RemoteServerAccess:
+    """Presents one remote Server with the SAME method surface as ServerService,
+    so the tabs can drive a local or a remote Server through one interface. Each
+    call becomes a request over the Machine's connection.
+
+    is_running() is served from a cached flag (updated by get_info() and by
+    note_status(), which the event layer calls on a status event) so the UI can
+    poll it freely without a round-trip per call. create_backup's progress
+    arrives as host-pushed 'progress' events, not via progress_callback (which
+    is accepted only for signature parity with ServerService)."""
+
+    def __init__(self, connection: MachineConnection, server_id: str):
+        self.conn = connection
+        self.server_id = server_id
+        self._running = False
+
+    def _req(self, op, timeout=_REQUEST_TIMEOUT, **params):
+        return self.conn.request(op, server=self.server_id, params=params, timeout=timeout)
+
+    def note_status(self, running: bool):
+        self._running = bool(running)
+
+    # --- process control -------------------------------------------------
+    def is_running(self) -> bool:
+        return self._running
+
+    def start(self) -> bool:
+        return bool(self._req("start").get("started", False))
+
+    def stop(self) -> bool:
+        return bool(self._req("stop", timeout=45).get("stopped", False))
+
+    def restart(self) -> bool:
+        return bool(self._req("restart", timeout=45).get("restarted", False))
+
+    def send_command(self, command: str):
+        self._req("send_command", command=command)
+
+    def console_snapshot(self) -> List[str]:
+        return self._req("console_snapshot").get("lines", [])
+
+    def server_port(self) -> str:
+        return str(self.get_info().get("port", "19132"))
+
+    # --- reads -----------------------------------------------------------
+    def get_info(self) -> dict:
+        info = self._req("get_info")
+        self._running = bool(info.get("running"))
+        return info
+
+    def list_worlds(self) -> List[dict]:
+        return self._req("list_worlds").get("worlds", [])
+
+    def read_properties(self) -> Dict[str, str]:
+        return self._req("read_properties").get("properties", {})
+
+    def get_active_world(self) -> str:
+        return self.read_properties().get("level-name", "")
+
+    def read_gamerules(self) -> dict:
+        return self._req("read_gamerules").get("gamerules", {})
+
+    def get_players(self) -> dict:
+        return self._req("get_players")
+
+    # --- writes ----------------------------------------------------------
+    def write_properties(self, props: Dict[str, str]) -> bool:
+        return bool(self._req("write_properties", properties=props).get("ok", False))
+
+    def set_active_world(self, name: str) -> bool:
+        return bool(self._req("set_active_world", name=name).get("ok", False))
+
+    def set_allowlist_enforcement(self, enable: bool) -> bool:
+        return bool(self._req("set_allowlist_enforcement", enable=enable).get("ok", False))
+
+    def add_allowlist_player(self, name: str, xuid=None):
+        self._req("add_allowlist_player", name=name, xuid=xuid)
+
+    def remove_allowlist_player(self, name: str):
+        self._req("remove_allowlist_player", name=name)
+
+    def set_permission(self, xuid: str, level: str):
+        self._req("set_permission", xuid=xuid, level=level)
+
+    def remove_permission(self, xuid: str):
+        self._req("remove_permission", xuid=xuid)
+
+    def send_gamerule(self, rule: str, value: str):
+        self._req("send_gamerule", rule=rule, value=value)
+
+    def set_gamemode(self, name: str, mode: str):
+        self._req("set_gamemode", name=name, mode=mode)
+
+    # --- backups ---------------------------------------------------------
+    def list_backups(self) -> List[dict]:
+        return self._req("list_backups").get("backups", [])
+
+    def create_backup(self, preserve_items: List[str], compress: bool = False, progress_callback=None):
+        r = self._req("create_backup", timeout=600, preserve=preserve_items, compress=compress)
+        return r.get("ok", False), r.get("path", ""), r.get("backed_up", [])
+
+    def restore_backup(self, backup_path, progress_callback=None):
+        r = self._req("restore_backup", timeout=600, path=str(backup_path))
+        return r.get("ok", False), r.get("restored", [])
+
+    def delete_backup(self, backup_path) -> bool:
+        return bool(self._req("delete_backup", path=str(backup_path)).get("ok", False))
+
+
 # ============================================================================
 # MAIN APPLICATION
 # ============================================================================
