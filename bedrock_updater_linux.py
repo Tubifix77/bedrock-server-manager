@@ -5,6 +5,11 @@ A comprehensive cross-platform tool for managing Minecraft Bedrock Dedicated Ser
 Features: Update, backup, restore, run server, auto-cleanup, download updates, and more.
 """
 
+# Defer annotation evaluation so type hints like `root: tk.Tk` never touch
+# tkinter at import time -- required for the headless `--agent` mode to import
+# this module on a box without tkinter/X11 (see the guarded import below).
+from __future__ import annotations
+
 import os
 import sys
 import json
@@ -26,9 +31,16 @@ import webbrowser
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
-from tkinter import font as tkfont
+# tkinter is optional: the GUI needs it, but the headless `--agent` host must
+# import and run on machines without tkinter/X11. TK_AVAILABLE gates the GUI.
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox, simpledialog
+    from tkinter import font as tkfont
+    TK_AVAILABLE = True
+except Exception:
+    tk = ttk = filedialog = messagebox = simpledialog = tkfont = None
+    TK_AVAILABLE = False
 from pathlib import Path
 import logging
 from typing import Optional, Dict, List, Tuple
@@ -199,7 +211,14 @@ SERVER_EXECUTABLE = "bedrock_server.exe" if sys.platform == "win32" else "bedroc
 # UTILITY FUNCTIONS
 # ============================================================================
 
+# Set by `--agent --config PATH` so both load_config() and save_config() target
+# the same file the agent was launched with, instead of the per-user default.
+_CONFIG_PATH_OVERRIDE = None
+
+
 def get_config_path() -> Path:
+    if _CONFIG_PATH_OVERRIDE:
+        return Path(_CONFIG_PATH_OVERRIDE)
     if sys.platform == "win32":
         config_dir = Path(os.environ.get("APPDATA", Path.home()))
     else:
@@ -215,8 +234,8 @@ def get_log_dir() -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
-def load_config() -> dict:
-    config_path = get_config_path()
+def load_config(config_path=None) -> dict:
+    config_path = Path(config_path) if config_path else get_config_path()
     config = copy.deepcopy(DEFAULT_SETTINGS)
     raw_saved = None
     try:
@@ -1503,7 +1522,9 @@ class BedrockUpdaterApp:
         # above always alias the current profile's entry), but a running context
         # survives being deselected -- this is the foundation the sidebar (Stage 1
         # later) and simultaneous multi-Server running build on.
-        self.contexts: Dict[str, dict] = {}
+        self.contexts: Dict[str, "ServerService"] = {}
+        # In-process remote-administration host (Settings > Remote Administration).
+        self.remote_host: Optional[RemoteAdminHost] = None
 
         self.setup_logging()
         self.setup_styles()
@@ -1511,8 +1532,12 @@ class BedrockUpdaterApp:
         self.apply_theme()
         self.load_saved_state()
         self.setup_keyboard_shortcuts()
-        
+
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Resume hosting if it was left enabled last session.
+        if self.config.get("remote_admin", {}).get("enabled"):
+            self.root.after(500, lambda: self.toggle_remote_admin(startup=True))
         
         # Linux-specific startup message
         if sys.platform != "win32":
@@ -2557,13 +2582,42 @@ class BedrockUpdaterApp:
         ttk.Checkbutton(ui_frame, text="🌙 Dark mode", variable=self.dark_mode_var, command=self.toggle_dark_mode).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
         self.check_updates_var = tk.BooleanVar(value=self.config.get("check_updates_on_start", True))
         ttk.Checkbutton(ui_frame, text="Check for server updates on application start", variable=self.check_updates_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
+
+        # --- Remote Administration: let another computer running this app
+        #     manage THIS machine's Servers over the LAN (docs/V2-MAJORDOMO-PLAN.md).
+        ra_cfg = self.config.setdefault("remote_admin", {"enabled": False, "port": REMOTE_DEFAULT_PORT, "token": ""})
+        ra_frame = ttk.LabelFrame(self.settings_tab, text="Remote Administration (this Machine)", padding=10)
+        ra_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        ra_frame.columnconfigure(1, weight=1)
+        self.remote_enabled_var = tk.BooleanVar(value=bool(ra_cfg.get("enabled")))
+        ttk.Checkbutton(ra_frame, text="Allow this computer to be administered from another PC on the network",
+                        variable=self.remote_enabled_var, command=self.toggle_remote_admin).grid(
+                        row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(ra_frame, text="Port:").grid(row=1, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
+        self.remote_port_var = tk.IntVar(value=ra_cfg.get("port", REMOTE_DEFAULT_PORT))
+        ttk.Spinbox(ra_frame, from_=1024, to=65535, width=8, textvariable=self.remote_port_var).grid(
+            row=1, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(ra_frame, text="Pairing token:").grid(row=2, column=0, sticky="e", padx=(0, 4), pady=(6, 0))
+        self.remote_token_var = tk.StringVar(value=ra_cfg.get("token", "") or "(generated when enabled)")
+        token_entry = ttk.Entry(ra_frame, textvariable=self.remote_token_var, state="readonly", width=20)
+        token_entry.grid(row=2, column=1, sticky="w", pady=(6, 0))
+        tbtns = ttk.Frame(ra_frame)
+        tbtns.grid(row=2, column=2, sticky="w", padx=6, pady=(6, 0))
+        ttk.Button(tbtns, text="📋 Copy", command=self.copy_remote_token, width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tbtns, text="🔄 New", command=self.regenerate_remote_token, width=6).pack(side=tk.LEFT, padx=2)
+        self.remote_status_label = ttk.Label(ra_frame, text="", font=("TkDefaultFont", 8), foreground="gray")
+        self.remote_status_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(ra_frame,
+                  text="LAN only — enter this machine's address + token on the other PC's ➕ Machine. Don't port-forward this.",
+                  font=("TkDefaultFont", 8), foreground="gray").grid(row=4, column=0, columnspan=3, sticky="w")
+
         btn_frame = ttk.Frame(self.settings_tab)
-        btn_frame.grid(row=2, column=0, sticky="ew", pady=20)
+        btn_frame.grid(row=3, column=0, sticky="ew", pady=20)
         ttk.Button(btn_frame, text="💾 Save Settings", command=self.save_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="🔄 Reset to Defaults", command=self.reset_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="📂 Open Config File", command=self.open_config_file).pack(side=tk.RIGHT, padx=5)
         about_frame = ttk.LabelFrame(self.settings_tab, text="About", padding=10)
-        about_frame.grid(row=3, column=0, sticky="ew", pady=5)
+        about_frame.grid(row=4, column=0, sticky="ew", pady=5)
         ttk.Label(about_frame, text=f"{APP_NAME} v{APP_VERSION}").pack(anchor="w")
         ttk.Label(about_frame, text=APP_AUTHOR, foreground="gray").pack(anchor="w")
         ttk.Label(about_frame, text="A comprehensive tool for managing Minecraft Bedrock Dedicated Servers.", foreground="gray").pack(anchor="w", pady=(5, 0))
@@ -2762,6 +2816,68 @@ class BedrockUpdaterApp:
         return {"name": socket.gethostname(), "platform": sys.platform,
                 "app_version": APP_VERSION, "servers": self.remote_server_list()}
 
+    # --- Remote-admin host control (Settings > Remote Administration) -----
+    def toggle_remote_admin(self, startup: bool = False):
+        ra = self.config.setdefault("remote_admin", {"enabled": False, "port": REMOTE_DEFAULT_PORT, "token": ""})
+        if startup:
+            self.remote_enabled_var.set(True)
+        enable = self.remote_enabled_var.get()
+        if enable:
+            port = int(self.remote_port_var.get())
+            token = self.remote_token()  # ensures a token exists
+            try:
+                if self.remote_host and self.remote_host.is_running():
+                    self.remote_host.stop()
+                self.remote_host = RemoteAdminHost(
+                    self, port=port,
+                    log=lambda m: self.root.after(0, lambda: self.log(m, "info")))
+                self.remote_host.start()
+            except Exception as e:
+                self.remote_enabled_var.set(False)
+                ra["enabled"] = False
+                self.remote_host = None
+                save_config(self.config)
+                self._refresh_remote_status()
+                messagebox.showerror("Remote Administration", str(e))
+                return
+            ra["enabled"] = True
+            ra["port"] = port
+            self.remote_token_var.set(token)
+        else:
+            if self.remote_host:
+                self.remote_host.stop()
+                self.remote_host = None
+            ra["enabled"] = False
+        save_config(self.config)
+        self._refresh_remote_status()
+
+    def _refresh_remote_status(self):
+        if not hasattr(self, 'remote_status_label'):
+            return
+        if self.remote_host and self.remote_host.is_running():
+            self.remote_status_label.config(
+                text=f"● Listening on {get_local_ip()}:{self.remote_host.port} — pair another PC using the token.",
+                foreground="#4CAF50")
+        else:
+            self.remote_status_label.config(text="○ Not accepting remote administration.", foreground="gray")
+
+    def copy_remote_token(self):
+        token = self.remote_token()
+        self.remote_token_var.set(token)
+        self.root.clipboard_clear()
+        self.root.clipboard_append(token)
+        self.log("Pairing token copied to clipboard", "info")
+
+    def regenerate_remote_token(self):
+        if not messagebox.askyesno("Regenerate token",
+                "Generate a new pairing token?\n\nAny PC that reconnects will need the new token."):
+            return
+        ra = self.config.setdefault("remote_admin", {"enabled": False, "port": REMOTE_DEFAULT_PORT, "token": ""})
+        ra["token"] = generate_pairing_token()
+        save_config(self.config)
+        self.remote_token_var.set(ra["token"])
+        self.log("New pairing token generated", "success")
+
     def initialize_managers(self):
         # Ensures active_profile exists (creating it on the very first Server
         # Folder selection) and that its path is current, before the registry
@@ -2860,6 +2976,9 @@ class BedrockUpdaterApp:
                 profile[key] = self.config[key]
 
     def on_close(self):
+        if self.remote_host:
+            self.remote_host.stop()
+            self.remote_host = None
         running = [(pid, ctx) for pid, ctx in self.contexts.items() if ctx.is_running()]
         if running:
             profiles = self.config.get("server_profiles", {})
@@ -3493,7 +3612,12 @@ class BedrockUpdaterApp:
 # SERVER PROPERTIES EDITOR COMPONENT
 # ============================================================================
 
-class ServerPropertiesEditor(ttk.Frame):
+# ttk.Frame when tkinter is present; object under --agent (this class is never
+# instantiated headlessly, but the class statement still runs at import time).
+_TkFrameBase = ttk.Frame if TK_AVAILABLE else object
+
+
+class ServerPropertiesEditor(_TkFrameBase):
     def __init__(self, parent, app):
         super().__init__(parent, padding=10)
         self.app = app
@@ -3567,10 +3691,128 @@ class ServerPropertiesEditor(ttk.Frame):
 
 
 # ============================================================================
+# HEADLESS AGENT
+# ============================================================================
+
+class AgentApp:
+    """Headless host: no tkinter, no GUI. Serves this machine's configured
+    Servers to remote administrators. Launched with `--agent`. Implements the
+    same provider interface RemoteAdminHost consumes as BedrockUpdaterApp does,
+    but builds plain (widget-free) ServerServices and blocks until signalled."""
+
+    def __init__(self, config: dict):
+        self.config = config
+        self.services: Dict[str, ServerService] = {}
+        self.host = None
+
+    def _log(self, msg: str):
+        print(msg, flush=True)
+        try:
+            logging.getLogger(__name__).info(msg)
+        except Exception:
+            pass
+
+    # --- provider interface ---------------------------------------------
+    def remote_token(self) -> str:
+        ra = self.config.setdefault("remote_admin", {"enabled": False, "port": REMOTE_DEFAULT_PORT, "token": ""})
+        if not ra.get("token"):
+            ra["token"] = generate_pairing_token()
+            save_config(self.config)
+        return ra["token"]
+
+    def remote_service(self, profile_id):
+        if profile_id in self.services:
+            return self.services[profile_id]
+        profile = self.config.get("server_profiles", {}).get(profile_id)
+        if not profile or not profile.get("path"):
+            return None
+        path = Path(profile["path"])
+        if not path.exists():
+            return None
+        known = profile.setdefault("known_players", {})
+        service = ServerService(path, self.config, known_players=known)
+        self.services[profile_id] = service
+        return service
+
+    def remote_server_list(self) -> List[dict]:
+        out = []
+        for pid, profile in self.config.get("server_profiles", {}).items():
+            svc = self.services.get(pid)
+            out.append({"id": pid, "name": profile.get("name", "Server"),
+                        "running": svc.is_running() if svc else False})
+        return out
+
+    def remote_machine_info(self) -> dict:
+        return {"name": socket.gethostname(), "platform": sys.platform,
+                "app_version": APP_VERSION, "servers": self.remote_server_list()}
+
+    def run(self, port: int):
+        self.host = RemoteAdminHost(self, port=port, log=self._log)
+        token = self.remote_token()
+        self.host.start()
+        self._log(f"{APP_NAME} v{APP_VERSION} agent running.")
+        self._log(f"Machine: {socket.gethostname()}  ({len(self.config.get('server_profiles', {}))} Server(s) configured)")
+        self._log(f"Pairing token: {token}")
+        self._log("LAN only — do not port-forward. Ctrl-C to stop.")
+        stop_event = threading.Event()
+
+        def _handle(signum, frame):
+            self._log("Shutting down agent...")
+            stop_event.set()
+        signal.signal(signal.SIGINT, _handle)
+        try:
+            signal.signal(signal.SIGTERM, _handle)
+        except Exception:
+            pass
+        try:
+            while not stop_event.wait(0.5):
+                pass
+        finally:
+            self.host.stop()
+
+
+# ============================================================================
 # ENTRY POINT
 # ============================================================================
 
+def run_agent(config_path=None, port=None):
+    global _CONFIG_PATH_OVERRIDE
+    if config_path:
+        _CONFIG_PATH_OVERRIDE = config_path
+    # Log to the shared app log (file only; console output is handled by _log).
+    try:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s [%(levelname)s] %(message)s',
+            handlers=[logging.FileHandler(get_log_dir() / f"agent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
+                                          encoding='utf-8')])
+    except Exception:
+        pass
+    config = load_config()
+    ra = config.get("remote_admin", {})
+    use_port = port or ra.get("port") or REMOTE_DEFAULT_PORT
+    AgentApp(config).run(use_port)
+
+
 def main():
+    parser = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}")
+    parser.add_argument("--agent", action="store_true",
+                        help="Run headless as a remote-administration host (no GUI).")
+    parser.add_argument("--config", metavar="PATH", default=None,
+                        help="Use a specific config file (agent mode).")
+    parser.add_argument("--port", type=int, default=None,
+                        help="Override the remote-administration port.")
+    args = parser.parse_args()
+
+    if args.agent:
+        run_agent(config_path=args.config, port=args.port)
+        return
+
+    if not TK_AVAILABLE:
+        print("tkinter is not available — the GUI can't run here.\n"
+              "Run headless with:  python bedrock_updater_linux.py --agent", file=sys.stderr)
+        sys.exit(1)
+
     # className sets the window's WM_CLASS so Linux desktops (e.g. GNOME) can match
     # the running window to bedrock-server-manager.desktop and reuse its icon.
     root = tk.Tk(className="bedrock-server-manager")
