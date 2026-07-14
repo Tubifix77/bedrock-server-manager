@@ -196,8 +196,11 @@ The inventory confirmed 1.0's `DEFAULT_SETTINGS` already carries **unused stubs
 ```
 
 - **Migration** on first 2.0 start: flat keys → one profile (name from the `server-name`
-  property, else folder name); original config kept as `*.v1.bak`; dead keys dropped
-  (`start_minimized_to_tray`, `show_notifications` — both confirmed never read).
+  property, else folder name); original config kept as `*.v1.bak`. The truly-dead
+  `start_minimized_to_tray` key is removed from `DEFAULT_SETTINGS`, so `load_config()`'s
+  merge (which only copies saved keys that still exist as defaults) drops it automatically.
+  (`show_notifications` is kept — it still has a Settings checkbox and is saved, even if
+  nothing consumes it yet.)
 - **Shallow-copy fix**: `load_config()` starts from `DEFAULT_SETTINGS.copy()` (shallow), so
   nested defaults like `DEFAULT_PRESERVE_ITEMS` are *shared objects* mutated in place. Profiles
   must `copy.deepcopy` their nested defaults or all Servers would share preserve/known_players

@@ -88,7 +88,6 @@ DEFAULT_SETTINGS = {
     "auto_cleanup_backups": True,
     "auto_stop_server_before_update": True,
     "auto_start_server_after_update": False,
-    "start_minimized_to_tray": False,
     "show_notifications": True,
     "dark_mode": False,
     "window_geometry": "900x700",
