@@ -28,6 +28,7 @@ from tkinter import font as tkfont
 from pathlib import Path
 import logging
 from typing import Optional, Dict, List, Tuple
+from collections import deque
 import time
 
 # ============================================================================
@@ -790,7 +791,14 @@ class BedrockUpdaterApp:
         self.preserve_vars = {}
         self.server_manager: Optional[ServerManager] = None
         self.backup_manager: Optional[BackupManager] = None
-        
+        # Per-profile registry (Stage 1, see docs/V2-MAJORDOMO-PLAN.md): keyed by
+        # profile_id, holds {"server_manager", "backup_manager", "console_buffer"}.
+        # The UI still shows one Server at a time (self.server_manager/backup_manager
+        # above always alias the current profile's entry), but a running context
+        # survives being deselected -- this is the foundation the sidebar (Stage 1
+        # later) and simultaneous multi-Server running build on.
+        self.contexts: Dict[str, dict] = {}
+
         self.setup_logging()
         self.setup_styles()
         self.setup_ui()
@@ -1859,20 +1867,65 @@ class BedrockUpdaterApp:
         elif current is self.players_tab:
             self.refresh_players_tab()
 
+    def _build_context(self, server_path: Path) -> dict:
+        """Construct a fresh registry entry: its own ServerManager, BackupManager,
+        and a console ring buffer (for replay once the sidebar can reselect it)."""
+        server_manager = ServerManager(server_path)
+        console_buffer = deque(maxlen=self.config.get("console_max_lines", 1000))
+        server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self.console_log(line)))
+        server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self._scan_console_line(line)))
+        server_manager.add_output_callback(console_buffer.append)
+        server_manager.add_status_callback(lambda status: self.root.after(0, lambda: self.update_server_status(status)))
+        return {
+            "server_manager": server_manager,
+            "backup_manager": BackupManager(server_path, self.config),
+            "console_buffer": console_buffer,
+        }
+
+    def _get_or_create_context(self, profile_id: str, server_path: Path) -> Optional[dict]:
+        """Return the registry entry for profile_id, creating it if needed.
+
+        If a context already exists for this profile_id but points at a
+        different (still-running) path -- i.e. the Server Folder was changed
+        out from under a running Server -- returns None so the caller can
+        refuse the change instead of silently orphaning the running process.
+        """
+        ctx = self.contexts.get(profile_id)
+        if ctx is not None:
+            if ctx["server_manager"].server_path == server_path:
+                return ctx
+            if ctx["server_manager"].is_running():
+                return None
+        ctx = self._build_context(server_path)
+        self.contexts[profile_id] = ctx
+        return ctx
+
     def initialize_managers(self):
+        # Ensures active_profile exists (creating it on the very first Server
+        # Folder selection) and that its path is current, before the registry
+        # needs a key to file this context under.
+        self._sync_flat_settings_into_active_profile()
         server_path = Path(self.server_entry.get())
-        if server_path.exists():
-            self.server_manager = ServerManager(server_path)
-            self.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self.console_log(line)))
-            self.server_manager.add_output_callback(lambda line: self.root.after(0, lambda: self._scan_console_line(line)))
-            self.server_manager.add_status_callback(lambda status: self.root.after(0, lambda: self.update_server_status(status)))
-            self.backup_manager = BackupManager(server_path, self.config)
-            self.refresh_backups()
-            self.refresh_worlds()
-            self.refresh_world_combo()
-            self.refresh_backup_header()
-            self.refresh_players_tab()
-            self.update_network_info()
+        profile_id = self.config.get("active_profile")
+        if not server_path.exists() or not profile_id:
+            return
+        ctx = self._get_or_create_context(profile_id, server_path)
+        if ctx is None:
+            old_path = str(self.contexts[profile_id]["server_manager"].server_path)
+            messagebox.showwarning("Server Running",
+                "The Server at the previous location is still running.\n\n"
+                "Stop it before changing the Server Folder.")
+            self.server_entry.delete(0, tk.END)
+            self.server_entry.insert(0, old_path)
+            return
+        self.server_manager = ctx["server_manager"]
+        self.backup_manager = ctx["backup_manager"]
+        self.refresh_backups()
+        self.refresh_worlds()
+        self.refresh_world_combo()
+        self.refresh_backup_header()
+        self.refresh_players_tab()
+        self.update_network_info()
     
     def update_server_status(self, status: str):
         if status == "running":
