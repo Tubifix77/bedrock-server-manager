@@ -774,7 +774,14 @@ class ServerManager:
             if sys.platform != "win32":
                 os.chmod(executable, 0o755)
             
-            # Start the server process
+            # Start the server process.
+            # encoding/errors are explicit: BDS speaks UTF-8 on every platform,
+            # but text=True alone would decode/encode with the process locale
+            # (cp1252 on Windows) -- garbling Danish names/chat and, worse,
+            # killing the stdout reader thread on bytes cp1252 can't decode
+            # (many emoji), which would freeze the console and falsely report
+            # the Server as stopped. errors="replace" guarantees the reader
+            # never dies on odd bytes; UTF-8 also lets non-ASCII commands be sent.
             if sys.platform == "win32":
                 self.process = subprocess.Popen(
                     [str(executable)],
@@ -783,6 +790,8 @@ class ServerManager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     bufsize=1,
                     creationflags=subprocess.CREATE_NO_WINDOW
                 )
@@ -790,7 +799,7 @@ class ServerManager:
                 # Linux/macOS - Set LD_LIBRARY_PATH for Bedrock server libraries
                 env = os.environ.copy()
                 env['LD_LIBRARY_PATH'] = str(self.server_path)
-                
+
                 self.process = subprocess.Popen(
                     [str(executable)],
                     cwd=str(self.server_path),
@@ -798,6 +807,8 @@ class ServerManager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     bufsize=1,
                     env=env
                 )
