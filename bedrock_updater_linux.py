@@ -1114,7 +1114,17 @@ class BedrockUpdaterApp:
         
         self.update_installed_label = ttk.Label(file_frame, text="Installed Bedrock Server Version: —", foreground="gray")
         self.update_installed_label.grid(row=2, column=1, sticky="w", padx=5, pady=(4, 0))
-        
+
+        # Per-Server update policy (docs/V2-MAJORDOMO-PLAN.md) -- lives here,
+        # not the app-level Settings tab, since it's specific to this Server.
+        update_settings_frame = ttk.LabelFrame(self.main_tab, text="Update Settings (this Server)", padding=10)
+        update_settings_frame.grid(row=2, column=0, sticky="ew", pady=5)
+        self.auto_stop_var = tk.BooleanVar(value=self.config.get("auto_stop_server_before_update", True))
+        ttk.Checkbutton(update_settings_frame, text="Automatically stop server before update", variable=self.auto_stop_var).grid(row=0, column=0, sticky="w", pady=2)
+        self.auto_start_var = tk.BooleanVar(value=self.config.get("auto_start_server_after_update", False))
+        ttk.Checkbutton(update_settings_frame, text="Automatically start server after update", variable=self.auto_start_var).grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Button(update_settings_frame, text="💾 Save", command=self.save_settings).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
         progress_frame = ttk.Frame(self.main_tab)
         progress_frame.grid(row=4, column=0, sticky="ew", pady=10)
         progress_frame.columnconfigure(0, weight=1)
@@ -1223,7 +1233,7 @@ class BedrockUpdaterApp:
     
     def setup_backup_tab(self):
         self.backup_tab.columnconfigure(0, weight=1)
-        self.backup_tab.rowconfigure(3, weight=1)
+        self.backup_tab.rowconfigure(4, weight=1)
         self.backup_header_label = ttk.Label(self.backup_tab, text="Backups for: (no Server selected)",
                                              font=("TkDefaultFont", 10, "bold"))
         self.backup_header_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
@@ -1255,8 +1265,20 @@ class BedrockUpdaterApp:
             if col >= 3:
                 col = 0
                 row += 1
+        # Backup policy is per Server (docs/V2-MAJORDOMO-PLAN.md), so it lives
+        # here beside the preserve list rather than in the app-level Settings tab.
+        backup_settings_frame = ttk.LabelFrame(self.backup_tab, text="Backup Settings (this Server)", padding=10)
+        backup_settings_frame.grid(row=3, column=0, sticky="ew", pady=5)
+        ttk.Label(backup_settings_frame, text="Maximum backups to keep:").grid(row=0, column=0, sticky="w", pady=5)
+        self.max_backups_var = tk.IntVar(value=self.config.get("max_backups", 5))
+        ttk.Spinbox(backup_settings_frame, from_=1, to=50, width=10, textvariable=self.max_backups_var).grid(row=0, column=1, sticky="w", padx=10)
+        self.auto_cleanup_var = tk.BooleanVar(value=self.config.get("auto_cleanup_backups", True))
+        ttk.Checkbutton(backup_settings_frame, text="Automatically cleanup old backups after update", variable=self.auto_cleanup_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+        self.compress_var = tk.BooleanVar(value=self.config.get("compress_backups", False))
+        ttk.Checkbutton(backup_settings_frame, text="Compress backups (ZIP format, slower but smaller)", variable=self.compress_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
+        ttk.Button(backup_settings_frame, text="💾 Save", command=self.save_settings).grid(row=3, column=0, sticky="w", pady=(6, 0))
         list_frame = ttk.LabelFrame(self.backup_tab, text="Available Backups", padding=10)
-        list_frame.grid(row=3, column=0, sticky="nsew")
+        list_frame.grid(row=4, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
         columns = ("name", "date", "size")
@@ -1272,7 +1294,7 @@ class BedrockUpdaterApp:
         self.backup_tree.grid(row=0, column=0, sticky="nsew")
         backup_scroll.grid(row=0, column=1, sticky="ns")
         action_frame = ttk.Frame(self.backup_tab)
-        action_frame.grid(row=4, column=0, sticky="ew", pady=10)
+        action_frame.grid(row=5, column=0, sticky="ew", pady=10)
         ttk.Button(action_frame, text="🔄 Restore Selected", command=self.restore_selected_backup).pack(side=tk.LEFT, padx=5)
         ttk.Button(action_frame, text="❌ Delete Selected", command=self.delete_selected_backup).pack(side=tk.LEFT, padx=5)
         ttk.Button(action_frame, text="📂 Open in Explorer", command=self.open_selected_backup).pack(side=tk.LEFT, padx=5)
@@ -1846,8 +1868,13 @@ class BedrockUpdaterApp:
         self.log(f"gamerule {rule} = {value}", "success")
 
     def setup_settings_tab(self):
+        # Backup policy moved to 💾 Backups and the two update toggles to
+        # 🔄 Update (docs/V2-MAJORDOMO-PLAN.md, "Per-server settings leave the
+        # Settings tab") -- they're per-Server, so they now live beside the
+        # data they configure. This tab is app-level only; adding a Server is
+        # now the sidebar's ➕ Server.
         self.settings_tab.columnconfigure(0, weight=1)
-        location_frame = ttk.LabelFrame(self.settings_tab, text="Server Location", padding=10)
+        location_frame = ttk.LabelFrame(self.settings_tab, text="Current Server's Folder", padding=10)
         location_frame.grid(row=0, column=0, sticky="ew", pady=5)
         location_frame.columnconfigure(1, weight=1)
         ttk.Label(location_frame, text="Server Folder:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
@@ -1857,27 +1884,10 @@ class BedrockUpdaterApp:
         ttk.Button(location_frame, text="Browse", command=self.browse_server).grid(row=0, column=2, padx=5)
         self.server_status = ttk.Label(location_frame, text="", foreground="gray")
         self.server_status.grid(row=1, column=1, sticky="w", padx=5)
-        ttk.Label(location_frame, text="One-time setup: the folder that holds (or will hold) your Bedrock server.",
+        ttk.Label(location_frame, text="Relocates the selected Server's folder. To add another Server, use ➕ Server in the sidebar.",
                   font=("TkDefaultFont", 8), foreground="gray").grid(row=2, column=1, sticky="w", padx=5)
-        backup_frame = ttk.LabelFrame(self.settings_tab, text="Backup Settings", padding=10)
-        backup_frame.grid(row=1, column=0, sticky="ew", pady=5)
-        ttk.Label(backup_frame, text="Maximum backups to keep:").grid(row=0, column=0, sticky="w", pady=5)
-        self.max_backups_var = tk.IntVar(value=self.config.get("max_backups", 5))
-        ttk.Spinbox(backup_frame, from_=1, to=50, width=10, textvariable=self.max_backups_var).grid(row=0, column=1, sticky="w", padx=10)
-        self.auto_cleanup_var = tk.BooleanVar(value=self.config.get("auto_cleanup_backups", True))
-        ttk.Checkbutton(backup_frame, text="Automatically cleanup old backups after update", variable=self.auto_cleanup_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
-        self.compress_var = tk.BooleanVar(value=self.config.get("compress_backups", False))
-        ttk.Checkbutton(backup_frame, text="Compress backups (ZIP format, slower but smaller)", variable=self.compress_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
-        update_frame = ttk.LabelFrame(self.settings_tab, text="Update Settings", padding=10)
-        update_frame.grid(row=2, column=0, sticky="ew", pady=5)
-        self.auto_stop_var = tk.BooleanVar(value=self.config.get("auto_stop_server_before_update", True))
-        ttk.Checkbutton(update_frame, text="Automatically stop server before update", variable=self.auto_stop_var).grid(row=0, column=0, sticky="w", pady=5)
-        self.auto_start_var = tk.BooleanVar(value=self.config.get("auto_start_server_after_update", False))
-        ttk.Checkbutton(update_frame, text="Automatically start server after update", variable=self.auto_start_var).grid(row=1, column=0, sticky="w", pady=5)
-        self.check_updates_var = tk.BooleanVar(value=self.config.get("check_updates_on_start", True))
-        ttk.Checkbutton(update_frame, text="Check for server updates on application start", variable=self.check_updates_var).grid(row=2, column=0, sticky="w", pady=5)
         ui_frame = ttk.LabelFrame(self.settings_tab, text="Interface Settings", padding=10)
-        ui_frame.grid(row=3, column=0, sticky="ew", pady=5)
+        ui_frame.grid(row=1, column=0, sticky="ew", pady=5)
         ttk.Label(ui_frame, text="Console font size:").grid(row=0, column=0, sticky="w", pady=5)
         self.font_size_var = tk.IntVar(value=self.config.get("console_font_size", 9))
         ttk.Spinbox(ui_frame, from_=6, to=24, width=10, textvariable=self.font_size_var).grid(row=0, column=1, sticky="w", padx=10)
@@ -1885,13 +1895,15 @@ class BedrockUpdaterApp:
         ttk.Checkbutton(ui_frame, text="Show notification messages", variable=self.notifications_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
         self.dark_mode_var = tk.BooleanVar(value=self.config.get("dark_mode", False))
         ttk.Checkbutton(ui_frame, text="🌙 Dark mode", variable=self.dark_mode_var, command=self.toggle_dark_mode).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
+        self.check_updates_var = tk.BooleanVar(value=self.config.get("check_updates_on_start", True))
+        ttk.Checkbutton(ui_frame, text="Check for server updates on application start", variable=self.check_updates_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
         btn_frame = ttk.Frame(self.settings_tab)
-        btn_frame.grid(row=4, column=0, sticky="ew", pady=20)
+        btn_frame.grid(row=2, column=0, sticky="ew", pady=20)
         ttk.Button(btn_frame, text="💾 Save Settings", command=self.save_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="🔄 Reset to Defaults", command=self.reset_settings).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="📂 Open Config File", command=self.open_config_file).pack(side=tk.RIGHT, padx=5)
         about_frame = ttk.LabelFrame(self.settings_tab, text="About", padding=10)
-        about_frame.grid(row=5, column=0, sticky="ew", pady=5)
+        about_frame.grid(row=3, column=0, sticky="ew", pady=5)
         ttk.Label(about_frame, text=f"{APP_NAME} v{APP_VERSION}").pack(anchor="w")
         ttk.Label(about_frame, text=APP_AUTHOR, foreground="gray").pack(anchor="w")
         ttk.Label(about_frame, text="A comprehensive tool for managing Minecraft Bedrock Dedicated Servers.", foreground="gray").pack(anchor="w", pady=(5, 0))
