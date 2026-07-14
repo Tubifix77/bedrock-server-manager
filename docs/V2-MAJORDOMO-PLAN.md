@@ -1,26 +1,38 @@
 # Bedrock Server Manager 2.0 "Majordomo" — multi-Server, multi-Machine administration
 
-> **STATUS (2026-07-14):** **Stages 1, 2 and 3 are DONE and verified** on `v2-majordomo`.
-> Stage 1 (Multi-Server local): `ee3de63`..`af5c803`. Stage 2 (Host service, Opus 4.8):
-> `b0cab88`..`575d534`. Stage 3 (Remote client, Opus 4.8): `0b8771d` handshake+machines config,
-> `c8fcd79` MachineConnection [xhigh], `3df30f7` RemoteServerAccess, `306f075` full per-tab
-> remote parity in the GUI. Each sub-step verified with its own headless/scripted test (incl.
-> a GUI instance driving a separate in-process host end-to-end). `master`/`main` and the
-> family's live 1.0.4 laptop were never touched — all verification ran against scratch configs
-> and loopback hosts.
-> **Next: Stage 4 (Fleet overview + Machine page, polish, docs, CHANGES/CLAUDE/README, and
-> packaging/version bump to 2.0.0), then the real loopback + laptop test and — only on the
-> user's explicit go — tag v2.0.0.** Stage 4 is Sonnet 5 `medium` per the model plan.
+> **STATUS (2026-07-14):** **ALL FOUR STAGES ARE DONE AND VERIFIED** on `v2-majordomo`.
+> Stage 1 (Multi-Server local, Sonnet): `ee3de63`..`af5c803`. Stage 2 (Host service, Opus 4.8):
+> `b0cab88`..`575d534`. Stage 3 (Remote client, Opus 4.8): `0b8771d`..`306f075`. Stage 4
+> (Fleet/Machine page, deferred ops, docs, version bump, Sonnet): `70f4dad` Fleet+Machine page,
+> `2a4e29c` remote world rename/delete + Update kept deliberately local-only, `845c0ae`
+> docs (GUI-DESIGN/CLAUDE/CHANGES/README) + version bump to **2.0.0**. Every sub-step across
+> all four stages was verified with its own headless/scripted test before moving on; the full
+> regression sweep (Stage 1 local + Stage 3d remote-GUI + Stage 4a/4b) was re-run clean after
+> the final docs commit. `master`/`main` and the family's live 1.0.4 laptop were never
+> touched — every bit of verification ran against scratch configs and loopback hosts.
 >
-> **Deferred (small, guarded — finish in Stage 4 or a follow-up):** remote-triggered *Update*
-> and remote *world rename/delete* need new host ops; they're guarded with a "local-only"
-> notice, not yet wired. Everything else works local AND remote.
+> **The code is done. What's left is entirely the user's call, not more building:**
+> 1. A real loopback test on the dev PC (two real BDS installs, not stubs) — recommended before
+>    trusting this on the family's laptop.
+> 2. Deploy to the laptop per the existing staged-deploy workflow (`pre-2.0-backup/`), migrate
+>    its real config, family regression test.
+> 3. Only on the user's **explicit go**: `git tag v2.0.0 && git push origin v2.0.0` → CI builds
+>    both installers → hand-write the release notes (the workflow leaves the body empty).
+> 4. Whenever ready: push `v2-majordomo` to GitHub (still local-only as of this status line)
+>    and/or merge to `main`, per the "two product lines" branching decision above.
+>
+> **Remaining known gaps (by design, not oversight):** remote-triggered *Update* is
+> permanently local-only (see Rationale in docs/GUI-DESIGN.md and CLAUDE.md — running the
+> destructive wipe/replace pipeline blind over a network link isn't a risk worth taking).
+> Everything else works identically local or remote.
 >
 > **Note on threading (don't "fix" what isn't broken):** remote worker→UI marshaling goes
-> through a thread-safe `queue.Queue` drained by a main-thread `root.after` poller. This is
-> deliberate and robust. The *local* ServerManager console marshaling still uses
-> `root.after` called from its reader thread — that is FINE under a real `mainloop()` (verified)
-> and must stay as-is; it only appears to fail under a headless `update()`-loop test harness.
+> through a thread-safe `queue.Queue` drained by a main-thread `root.after` poller — adopted
+> because it's what let this whole build be verified with headless scripted tests (no real
+> `mainloop()` running). The *local* ServerManager console marshaling still uses `root.after`
+> called from its reader thread directly — that is FINE under the app's real `mainloop()`
+> (verified directly) and must stay as-is; it only appears to fail under a headless
+> `update()`-loop test harness. Don't "fix" the local pattern to match the remote one.
 >
 > **Branching decision:** 2.0 lives on the `v2-majordomo` branch of *this same repo*, not a
 > separate repo — 2.0 is a refactor of the same single file (one file is both host and
@@ -267,14 +279,20 @@ docs note only (systemd/Task Scheduler), not automated in 2.0.
    remote Server, local-only guards (`306f075`). Verified incl. a GUI instance driving a
    separate in-process host end-to-end. Deferred (guarded): remote Update + remote world
    rename/delete (need new host ops).
-4. **Fleet overview + machine page, polish, docs, packaging** *(Sonnet 5, `medium`)*: selecting
-   a Machine/root shows a fleet/machine page (all Servers, confirmed start/stop); wire the
-   deferred remote ops (Update, world rename/delete) or document them as local-only;
-   GUI-DESIGN.md new terms + rationale, CHANGES.md 2.0.0, CLAUDE.md, README,
-   installer/AppImage/workflow bumps to 2.0.0.
+4. ✅ **DONE — Fleet overview + machine page, polish, docs, packaging** *(Sonnet 5, `medium`)*:
+   🌐 Fleet root (every Server, every Machine, double-click to open, Start/Stop Selected) +
+   Machine pages (local/remote, connection info, Remove Machine) replacing the notebook via
+   `show_overview()`/`show_notebook()` (`70f4dad`); remote world rename/delete wired as real
+   host ops, Update kept **permanently local-only by deliberate decision** (destructive
+   wipe/replace pipeline; not safe to run blind over a network link) — `_block_if_remote()`
+   now documents this as intentional, not a TODO (`2a4e29c`); GUI-DESIGN.md new terms +
+   Security model + Sidebar section + rationale, CLAUDE.md architecture rewrite, CHANGES.md
+   [2.0.0], README.md features + `--agent` quick-start, `APP_VERSION` and all packaging
+   fallback versions bumped to 2.0.0 (`845c0ae`). Full regression sweep re-run clean.
 
-Release: deploy to the laptop (existing staged-deploy workflow, `pre-2.0-backup/`), family
-regression test, then tag `v2.0.0` → CI builds installers (only on the user's explicit go).
+**The build is complete.** Remaining steps are release logistics, not code — see the STATUS
+box at the top of this file for the numbered list (real-BDS loopback test → laptop deploy →
+tag `v2.0.0` on explicit go → push the branch).
 
 ## Files
 
