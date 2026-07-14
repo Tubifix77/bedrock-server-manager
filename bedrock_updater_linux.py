@@ -559,6 +559,28 @@ def save_server_properties(filepath: Path, props: Dict[str, str]) -> bool:
 # BACKUP MANAGER
 # ============================================================================
 
+def _long_path(p) -> str:
+    r"""An OS path safe to hand to shutil / zipfile / open on Windows.
+
+    Absolute Windows paths get the \\?\ extended-length prefix, which lifts the
+    legacy 260-char MAX_PATH limit (up to ~32767). Without it, backing up or
+    restoring stock Bedrock's very deep resource_packs/chemistry tree fails with
+    WinError 2/3 once the Server is installed under a longish path (and since
+    Update backs up first, it then can't update either). No-op on POSIX and for
+    paths already prefixed. copytree/rmtree given a \\?\ root propagate the
+    prefix to every child, so deep descendants are covered too.
+    """
+    s = str(p)
+    if sys.platform != "win32":
+        return s
+    if s.startswith("\\\\?\\"):
+        return s
+    ap = os.path.abspath(s)
+    if ap.startswith("\\\\"):          # UNC \\server\share -> \\?\UNC\server\share
+        return "\\\\?\\UNC\\" + ap[2:]
+    return "\\\\?\\" + ap
+
+
 class BackupManager:
     def __init__(self, server_path: Path, config: dict):
         self.server_path = server_path
@@ -613,7 +635,7 @@ class BackupManager:
         
         try:
             if compress:
-                with zipfile.ZipFile(backup_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                with zipfile.ZipFile(_long_path(backup_path), 'w', zipfile.ZIP_DEFLATED) as zf:
                     for i, item in enumerate(preserve_items):
                         source = self.server_path / item
                         if source.exists():
@@ -621,9 +643,9 @@ class BackupManager:
                                 for file in source.rglob("*"):
                                     if file.is_file():
                                         arcname = str(file.relative_to(self.server_path))
-                                        zf.write(file, arcname)
+                                        zf.write(_long_path(file), arcname)
                             else:
-                                zf.write(source, item)
+                                zf.write(_long_path(source), item)
                             backed_up.append(item)
                         if progress_callback:
                             progress_callback((i + 1) / len(preserve_items) * 100)
@@ -634,20 +656,20 @@ class BackupManager:
                     if source.exists():
                         dest = backup_path / item
                         if source.is_dir():
-                            shutil.copytree(source, dest)
+                            shutil.copytree(_long_path(source), _long_path(dest))
                         else:
-                            shutil.copy2(source, dest)
+                            shutil.copy2(_long_path(source), _long_path(dest))
                         backed_up.append(item)
                     if progress_callback:
                         progress_callback((i + 1) / len(preserve_items) * 100)
-            
+
             return True, backup_path, backed_up
-        
+
         except Exception as e:
             # Cleanup failed backup
             if backup_path.exists():
                 if backup_path.is_dir():
-                    shutil.rmtree(backup_path)
+                    shutil.rmtree(_long_path(backup_path))
                 else:
                     backup_path.unlink()
             raise e
@@ -657,7 +679,7 @@ class BackupManager:
         
         try:
             if backup_path.suffix == '.zip':
-                with zipfile.ZipFile(backup_path, 'r') as zf:
+                with zipfile.ZipFile(_long_path(backup_path), 'r') as zf:
                     members = zf.namelist()
                     for i, member in enumerate(members):
                         # Get top-level item name
@@ -666,11 +688,11 @@ class BackupManager:
                             dest = self.server_path / top_level
                             if dest.exists():
                                 if dest.is_dir():
-                                    shutil.rmtree(dest)
+                                    shutil.rmtree(_long_path(dest))
                                 else:
                                     dest.unlink()
                             restored.append(top_level)
-                        zf.extract(member, self.server_path)
+                        zf.extract(member, _long_path(self.server_path))
                         if progress_callback and i % 50 == 0:
                             progress_callback((i + 1) / len(members) * 100)
             else:
@@ -679,13 +701,13 @@ class BackupManager:
                     dest = self.server_path / item.name
                     if dest.exists():
                         if dest.is_dir():
-                            shutil.rmtree(dest)
+                            shutil.rmtree(_long_path(dest))
                         else:
                             dest.unlink()
                     if item.is_dir():
-                        shutil.copytree(item, dest)
+                        shutil.copytree(_long_path(item), _long_path(dest))
                     else:
-                        shutil.copy2(item, dest)
+                        shutil.copy2(_long_path(item), _long_path(dest))
                     restored.append(item.name)
                     if progress_callback:
                         progress_callback((i + 1) / len(items) * 100)
@@ -703,19 +725,19 @@ class BackupManager:
             for backup in backups[max_backups:]:
                 try:
                     if backup["path"].is_dir():
-                        shutil.rmtree(backup["path"])
+                        shutil.rmtree(_long_path(backup["path"]))
                     else:
                         backup["path"].unlink()
                     deleted += 1
                 except Exception:
                     pass
-        
+
         return deleted
-    
+
     def delete_backup(self, backup_path: Path) -> bool:
         try:
             if backup_path.is_dir():
-                shutil.rmtree(backup_path)
+                shutil.rmtree(_long_path(backup_path))
             else:
                 backup_path.unlink()
             return True
