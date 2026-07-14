@@ -2652,7 +2652,7 @@ class BedrockUpdaterApp:
             try:
                 a.start()
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Fleet", str(e)))
+                self.root.after(0, lambda e=e: messagebox.showerror("Fleet", str(e)))
             self.root.after(800, self.refresh_sidebar)
         threading.Thread(target=do, daemon=True).start()
 
@@ -2666,7 +2666,7 @@ class BedrockUpdaterApp:
             try:
                 a.stop()
             except Exception as e:
-                self.root.after(0, lambda: messagebox.showerror("Fleet", str(e)))
+                self.root.after(0, lambda e=e: messagebox.showerror("Fleet", str(e)))
             self.root.after(800, self.refresh_sidebar)
         threading.Thread(target=do, daemon=True).start()
 
@@ -4231,7 +4231,7 @@ class BedrockUpdaterApp:
         except Exception as e:
             self.log(f"ERROR: {str(e)}", "error")
             self.set_progress(0, "Failed!")
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Process failed:\n{str(e)}"))
+            self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Process failed:\n{str(e)}"))
         finally:
             self.is_updating = False
             self.is_first_install = False
@@ -4353,8 +4353,8 @@ class BedrockUpdaterApp:
                 self.root.after(0, self.refresh_backups)
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Backup created:\n{path}"))
             except Exception as e:
-                self.root.after(0, lambda: self.log(f"Backup failed: {str(e)}", "error"))
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Backup failed:\n{str(e)}"))
+                self.root.after(0, lambda e=e: self.log(f"Backup failed: {str(e)}", "error"))
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Backup failed:\n{str(e)}"))
         threading.Thread(target=do_backup, daemon=True).start()
     
     def refresh_backup_header(self):
@@ -4423,8 +4423,8 @@ class BedrockUpdaterApp:
                 self.root.after(0, lambda: self.log(f"Restored {len(restored)} items", "success"))
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Restored {len(restored)} items"))
             except Exception as e:
-                self.root.after(0, lambda: self.log(f"Restore failed: {str(e)}", "error"))
-                self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+                self.root.after(0, lambda e=e: self.log(f"Restore failed: {str(e)}", "error"))
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", str(e)))
         threading.Thread(target=do_restore, daemon=True).start()
 
     def delete_selected_backup(self):
@@ -4588,7 +4588,7 @@ class BedrockUpdaterApp:
                             self.root.after(0, lambda p=percent: self.progress_var.set(p))
                 self.root.after(0, lambda: self.on_download_complete(str(target_path)))
             except Exception as e:
-                self.root.after(0, lambda: self.log(f"Download failed: {str(e)}", "error"))
+                self.root.after(0, lambda e=e: self.log(f"Download failed: {str(e)}", "error"))
                 self.root.after(0, lambda: messagebox.showerror("Download Error", f"Failed to download: {e}"))
         threading.Thread(target=perform_download, daemon=True).start()
 
