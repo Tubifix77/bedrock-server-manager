@@ -1,15 +1,26 @@
 # Bedrock Server Manager 2.0 "Majordomo" — multi-Server, multi-Machine administration
 
-> **STATUS (2026-07-14):** **Stages 1 and 2 are DONE and verified** on `v2-majordomo`.
-> Stage 1 (Multi-Server local): commits `ee3de63`..`af5c803`. Stage 2 (Host service, on
-> Opus 4.8): `b0cab88` protocol+HMAC, `38076de` ServerService, `c9dee9f` active-profile
-> callbacks, `070a804` RemoteAdminHost, `575d534` --agent + Settings Remote Administration UI.
-> Each sub-step verified with its own headless/scripted test before the next. `master`/`main`
-> and the family's live 1.0.4 laptop were never touched — all verification ran against scratch
-> configs and a fake/loopback client.
-> **Next: Stage 3 (Remote client — RemoteServerAccess + Machine connection + pairing UX +
-> remote sidebar rows).** Still Opus 4.8 territory (networking core). The host it talks to is
-> done and tested, so Stage 3 can be built + verified against a real in-process or --agent host.
+> **STATUS (2026-07-14):** **Stages 1, 2 and 3 are DONE and verified** on `v2-majordomo`.
+> Stage 1 (Multi-Server local): `ee3de63`..`af5c803`. Stage 2 (Host service, Opus 4.8):
+> `b0cab88`..`575d534`. Stage 3 (Remote client, Opus 4.8): `0b8771d` handshake+machines config,
+> `c8fcd79` MachineConnection [xhigh], `3df30f7` RemoteServerAccess, `306f075` full per-tab
+> remote parity in the GUI. Each sub-step verified with its own headless/scripted test (incl.
+> a GUI instance driving a separate in-process host end-to-end). `master`/`main` and the
+> family's live 1.0.4 laptop were never touched — all verification ran against scratch configs
+> and loopback hosts.
+> **Next: Stage 4 (Fleet overview + Machine page, polish, docs, CHANGES/CLAUDE/README, and
+> packaging/version bump to 2.0.0), then the real loopback + laptop test and — only on the
+> user's explicit go — tag v2.0.0.** Stage 4 is Sonnet 5 `medium` per the model plan.
+>
+> **Deferred (small, guarded — finish in Stage 4 or a follow-up):** remote-triggered *Update*
+> and remote *world rename/delete* need new host ops; they're guarded with a "local-only"
+> notice, not yet wired. Everything else works local AND remote.
+>
+> **Note on threading (don't "fix" what isn't broken):** remote worker→UI marshaling goes
+> through a thread-safe `queue.Queue` drained by a main-thread `root.after` poller. This is
+> deliberate and robust. The *local* ServerManager console marshaling still uses
+> `root.after` called from its reader thread — that is FINE under a real `mainloop()` (verified)
+> and must stay as-is; it only appears to fail under a headless `update()`-loop test harness.
 >
 > **Branching decision:** 2.0 lives on the `v2-majordomo` branch of *this same repo*, not a
 > separate repo — 2.0 is a refactor of the same single file (one file is both host and
@@ -247,11 +258,20 @@ docs note only (systemd/Task Scheduler), not automated in 2.0.
    + Settings "Remote Administration" toggle/port/token UI (`575d534`). Verified per sub-step
    with scripted socket clients, a real `--agent` subprocess, and the in-GUI toggle.
    Deferred: remote-triggered UPDATE (perform_update still widget-coupled).
-3. **Remote client** *(Opus 4.8, effort `high`)*: RemoteServerAccess + Machine connection (reader thread, request/response
-   correlation, reconnect with backoff, `root.after` marshaling); pairing UX; remote rows in
-   the sidebar. *Checkpoint: full loopback test on the dev PC.*
-4. **Fleet overview + machine page, polish, docs, packaging**: GUI-DESIGN.md new terms +
-   rationale, CHANGES.md 2.0.0, CLAUDE.md, README, installer/AppImage/workflow bumps to 2.0.0.
+3. ✅ **DONE — Remote client** *(Opus 4.8, effort `high`)*: remote_connect handshake + machines
+   config (`0b8771d`); MachineConnection — persistent conn, worker thread, id-correlated
+   requests, auto-reconnect w/ backoff, heartbeat (`c8fcd79`, xhigh); RemoteServerAccess
+   mirroring ServerService over the wire (`3df30f7`); full per-tab remote parity — uniform
+   self.active_access, sidebar remote Machines/Servers, Add Machine dialog, queue-based
+   worker→UI marshaling, every tab (Server/Worlds/Players/Configuration/Backups) driving a
+   remote Server, local-only guards (`306f075`). Verified incl. a GUI instance driving a
+   separate in-process host end-to-end. Deferred (guarded): remote Update + remote world
+   rename/delete (need new host ops).
+4. **Fleet overview + machine page, polish, docs, packaging** *(Sonnet 5, `medium`)*: selecting
+   a Machine/root shows a fleet/machine page (all Servers, confirmed start/stop); wire the
+   deferred remote ops (Update, world rename/delete) or document them as local-only;
+   GUI-DESIGN.md new terms + rationale, CHANGES.md 2.0.0, CLAUDE.md, README,
+   installer/AppImage/workflow bumps to 2.0.0.
 
 Release: deploy to the laptop (existing staged-deploy workflow, `pre-2.0-backup/`), family
 regression test, then tag `v2.0.0` → CI builds installers (only on the user's explicit go).
