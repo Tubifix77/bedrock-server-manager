@@ -2115,10 +2115,18 @@ class BedrockUpdaterApp:
                 profile[key] = self.config[key]
 
     def on_close(self):
-        if self.server_manager and self.server_manager.is_running():
-            if not messagebox.askyesno("Server Running", "The server is still running. Stop it and exit?"):
+        running = [(pid, ctx) for pid, ctx in self.contexts.items() if ctx["server_manager"].is_running()]
+        if running:
+            profiles = self.config.get("server_profiles", {})
+            names = [profiles.get(pid, {}).get("name", "Server") for pid, _ in running]
+            if not messagebox.askyesno("Servers Running",
+                    "The following Servers are still running:\n\n"
+                    + "\n".join(f"  • {n}" for n in names)
+                    + "\n\nStop them and exit?"):
                 return
-            self.server_manager.stop()
+            for pid, ctx in running:
+                self.log(f"Stopping '{profiles.get(pid, {}).get('name', 'Server')}' before exit...", "info")
+                ctx["server_manager"].stop()
         self.config["window_geometry"] = self.root.geometry()
         self.config["last_zip_path"] = self.zip_entry.get()
         self.config["last_server_path"] = self.server_entry.get()
@@ -2370,11 +2378,33 @@ class BedrockUpdaterApp:
             self.is_first_install = False
             self.root.after(0, lambda: self.update_button.config(state=tk.NORMAL))
     
+    def _find_port_conflict(self) -> Optional[str]:
+        """Name of another already-running profile bound to the same
+        server-port, or None. See docs/V2-MAJORDOMO-PLAN.md, 'Multi-Server
+        local' -- several Servers can run at once, but not on the same port."""
+        current_profile_id = self.config.get("active_profile")
+        current_port = self.parse_server_properties(
+            Path(self.server_entry.get()) / "server.properties").get("server-port", "19132")
+        for pid, ctx in self.contexts.items():
+            if pid == current_profile_id or not ctx["server_manager"].is_running():
+                continue
+            other_port = self.parse_server_properties(
+                ctx["server_manager"].server_path / "server.properties").get("server-port", "19132")
+            if other_port == current_port:
+                return self.config.get("server_profiles", {}).get(pid, {}).get("name", "another Server")
+        return None
+
     def start_server(self):
         if not self.server_manager:
             messagebox.showwarning("Warning", "No server configured.")
             return
         if self.server_manager.is_running():
+            return
+        conflict = self._find_port_conflict()
+        if conflict:
+            messagebox.showerror("Port already in use",
+                f"'{conflict}' is already running on this same port.\n\n"
+                "Stop it first, or change one Server's server-port in 📝 Configuration.")
             return
         self.console_text.config(state=tk.NORMAL)
         self.console_text.delete(1.0, tk.END)
