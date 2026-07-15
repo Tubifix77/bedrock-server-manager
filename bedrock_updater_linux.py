@@ -2965,7 +2965,12 @@ class BedrockUpdaterApp:
         self.world_info_label.grid(row=3, column=0, sticky="w")
     
     def refresh_world_combo(self):
-        """Fill the Active World dropdown from the Server (local or remote)."""
+        """Fill the Active World dropdown from the Server (local or remote).
+
+        list_worlds() walks every world folder on disk (get_folder_size) --
+        can take seconds against a large, actively-played world with the real
+        engine writing to it, so this must not block the main thread (same
+        root cause as update_server_info/refresh_worlds)."""
         if not hasattr(self, 'world_combo'):
             return
         acc = self.active_access
@@ -2973,10 +2978,21 @@ class BedrockUpdaterApp:
             self.world_combo.config(values=[])
             self.world_combo.set("")
             return
-        try:
-            worlds = [w["name"] for w in acc.list_worlds()]
-            current = acc.get_active_world()
-        except Exception:
+
+        def worker(acc=acc):
+            try:
+                worlds = [w["name"] for w in acc.list_worlds()]
+                current = acc.get_active_world()
+            except Exception:
+                self.root.after(0, lambda: self._apply_world_combo(acc, None, None))
+                return
+            self.root.after(0, lambda: self._apply_world_combo(acc, worlds, current))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_world_combo(self, acc, worlds, current):
+        if self.active_access is not acc:
+            return  # Server was switched while this fetch was in flight -- discard.
+        if worlds is None:
             self.world_combo.config(values=[])
             self.world_combo.set("")
             return
@@ -4086,17 +4102,35 @@ class BedrockUpdaterApp:
             self.properties_editor.load_properties()
     
     def update_server_info(self):
+        # get_info()/list_worlds() walk the worlds/ folder on disk (get_folder_size)
+        # -- can take seconds on a large, actively-played world with the real engine
+        # writing to it concurrently, so this must not run on the main thread (was
+        # freezing the whole GUI on every Server-tab visit).
         acc = self.active_access
         if acc is None:
             self.info_text.config(text="No Server selected — pick one in the sidebar, "
                                        "or set a Server Folder in ⚙️ Settings.")
             return
-        try:
-            info = acc.get_info()
-            worlds = acc.list_worlds()
-        except Exception as e:
-            self.info_text.config(text=f"Could not read this Server: {e}")
+        self.info_text.config(text="Loading Server info…")
+
+        def worker(acc=acc):
+            try:
+                info = acc.get_info()
+                worlds = acc.list_worlds()
+            except Exception as e:
+                self.root.after(0, lambda e=e, acc=acc: self._apply_server_info_error(acc, e))
+                return
+            self.root.after(0, lambda: self._apply_server_info(acc, info, worlds))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_server_info_error(self, acc, e):
+        if self.active_access is not acc:
             return
+        self.info_text.config(text=f"Could not read this Server: {e}")
+
+    def _apply_server_info(self, acc, info, worlds):
+        if self.active_access is not acc:
+            return  # Server was switched while this fetch was in flight -- discard.
         installed = info.get("version", "Unknown")
         active = info.get("active_world", "")
         world_versions = {w["name"]: w["version"] for w in worlds}
@@ -4119,7 +4153,7 @@ class BedrockUpdaterApp:
         ]
         self.info_text.config(text="\n".join(info_lines))
         self.refresh_world_combo()
-        self.refresh_backup_header()
+        self.refresh_backup_header(info.get("name", "Server"))  # reuse info -- avoid a second get_info() disk walk
         self.update_network_info()
         if hasattr(self, 'update_installed_label'):
             self.update_installed_label.config(text=f"Installed Bedrock Server Version: {installed}")
@@ -4389,18 +4423,34 @@ class BedrockUpdaterApp:
                 self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Backup failed:\n{str(e)}"))
         threading.Thread(target=do_backup, daemon=True).start()
     
-    def refresh_backup_header(self):
-        """Name the Server these backups belong to, so it's clear what gets backed up."""
+    def refresh_backup_header(self, name: Optional[str] = None):
+        """Name the Server these backups belong to, so it's clear what gets backed up.
+
+        Pass `name` when the caller already has it (from a get_info() it just
+        did) to avoid a second, redundant get_info() disk walk; otherwise this
+        fetches it itself in the background (get_info() walks worlds/ for its
+        size, which can be slow -- must not block the main thread)."""
         if not hasattr(self, 'backup_header_label'):
             return
         acc = self.active_access
         if acc is None:
             self.backup_header_label.config(text="Backups for: (no Server selected)")
             return
-        try:
-            name = acc.get_info().get("name", "Server")
-        except Exception:
-            name = "Server"
+        if name is not None:
+            self._apply_backup_header(acc, name)
+            return
+
+        def worker(acc=acc):
+            try:
+                n = acc.get_info().get("name", "Server")
+            except Exception:
+                n = "Server"
+            self.root.after(0, lambda: self._apply_backup_header(acc, n))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_backup_header(self, acc, name):
+        if self.active_access is not acc:
+            return  # Server was switched while this fetch was in flight -- discard.
         if self.active_remote:
             mname = self._remote_state.get(self.active_remote[0], {}).get("name", "remote Machine")
             self.backup_header_label.config(text=f"Backups for: {name}  —  stored on {mname}")
@@ -4506,16 +4556,28 @@ class BedrockUpdaterApp:
             open_folder(Path(self.server_entry.get()).parent)
     
     def refresh_worlds(self):
+        # list_worlds() walks every world folder on disk (get_folder_size per
+        # world) -- can take seconds against a large, actively-played world
+        # with the real engine writing to it, so this must not block the main
+        # thread (see update_server_info for the same fix / same root cause).
         acc = self.active_access
         if acc is None:
             return
         for item in self.world_tree.get_children():
             self.world_tree.delete(item)
-        try:
-            worlds_data = acc.list_worlds()
-            active = acc.get_active_world()
-        except Exception:
-            return
+
+        def worker(acc=acc):
+            try:
+                worlds_data = acc.list_worlds()
+                active = acc.get_active_world()
+            except Exception:
+                return
+            self.root.after(0, lambda: self._apply_worlds(acc, worlds_data, active))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_worlds(self, acc, worlds_data, active):
+        if self.active_access is not acc:
+            return  # Server was switched while this fetch was in flight -- discard.
         existing = set()
         for world in worlds_data:
             existing.add(world["name"])
