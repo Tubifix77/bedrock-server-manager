@@ -91,6 +91,7 @@ DEFAULT_SETTINGS = {
     "show_notifications": True,
     "dark_mode": False,
     "window_geometry": "1200x700",
+    "sidebar_collapsed": True,
     "check_updates_on_start": True,
     "server_profiles": {},
     "active_profile": None,
@@ -2066,16 +2067,29 @@ class BedrockUpdaterApp:
         self.root.minsize(800, 600)
         self.set_window_icon()
 
+        # A slim top bar holding the sidebar's show/hide toggle -- kept OUTSIDE
+        # the PanedWindow so it's always reachable even while the sidebar
+        # itself is collapsed (the only way back once it's hidden).
+        top_bar = ttk.Frame(self.root)
+        top_bar.pack(fill=tk.X, side=tk.TOP, padx=5, pady=(5, 0))
+        self.sidebar_toggle_btn = ttk.Button(top_bar, command=self.toggle_sidebar)
+        self.sidebar_toggle_btn.pack(side=tk.LEFT)
+
         # Sidebar (Machines -> Servers) + the existing tabbed Notebook, side by
         # side in a resizable pane. See docs/V2-MAJORDOMO-PLAN.md, "GUI: sidebar
         # + the same 7 tabs" -- Stage 1 only ever has "This computer" as a
-        # Machine; remote Machines arrive in Stage 3.
+        # Machine; remote Machines arrive in Stage 3. Collapsible (default
+        # collapsed) so single-Server users get the plain 1.0.4-style look;
+        # the toggle button above brings it back for Fleet/multi-Server use.
         self.main_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         self.main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        sidebar_frame = ttk.Frame(self.main_pane, width=200)
-        self.main_pane.add(sidebar_frame, weight=0)
-        self.setup_sidebar(sidebar_frame)
+        self.sidebar_frame = ttk.Frame(self.main_pane, width=200)
+        self.setup_sidebar(self.sidebar_frame)
+        self._sidebar_collapsed = bool(self.config.get("sidebar_collapsed", True))
+        if not self._sidebar_collapsed:
+            self.main_pane.add(self.sidebar_frame, weight=0)
+        self._update_sidebar_toggle_btn()
 
         notebook_frame = ttk.Frame(self.main_pane)
         self.main_pane.add(notebook_frame, weight=1)
@@ -2139,6 +2153,25 @@ class BedrockUpdaterApp:
         btns.pack(fill=tk.X, padx=4, pady=(0, 6))
         ttk.Button(btns, text="➕ Server", command=self.add_server_profile).pack(fill=tk.X, pady=(0, 2))
         ttk.Button(btns, text="➕ Machine", command=self.add_machine_dialog).pack(fill=tk.X)
+
+    def toggle_sidebar(self):
+        """Show/hide the Machines/Servers sidebar. Collapsed = plain 1.0.4-style
+        single-Server look; expanded = Fleet/multi-Server/multi-Machine view.
+        Persisted so the choice survives a restart."""
+        self._sidebar_collapsed = not self._sidebar_collapsed
+        if self._sidebar_collapsed:
+            self.main_pane.forget(self.sidebar_frame)
+        else:
+            self.main_pane.insert(0, self.sidebar_frame, weight=0)
+        self._update_sidebar_toggle_btn()
+        self.config["sidebar_collapsed"] = self._sidebar_collapsed
+        save_config(self.config)
+
+    def _update_sidebar_toggle_btn(self):
+        if self._sidebar_collapsed:
+            self.sidebar_toggle_btn.config(text="▶ Machines")
+        else:
+            self.sidebar_toggle_btn.config(text="◀ Hide")
 
     def refresh_sidebar(self):
         """Rebuild the Machines/Servers tree from config + live registry/connection state."""

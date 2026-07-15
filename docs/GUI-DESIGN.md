@@ -36,7 +36,7 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
 
 ## Sidebar (Machines → Servers, plus Fleet)
 
-A resizable left pane, always visible, replacing the old single-Server assumption:
+A resizable left pane, replacing the old single-Server assumption:
 
 ```
 🌐 Fleet (All Servers)
@@ -49,6 +49,15 @@ A resizable left pane, always visible, replacing the old single-Server assumptio
 [➕ Server] [➕ Machine]
 ```
 
+- **Collapsible, collapsed by default** (`sidebar_collapsed` in config, defaults `True`): a
+  single-Server user never has to look at Machines/Fleet at all — the app opens looking just
+  like 1.0.4. A small toggle button (**▶ Machines** / **◀ Hide**) sits in a slim bar above the
+  pane, outside the `ttk.PanedWindow` itself, so it's always reachable even while the sidebar
+  is hidden — it's the only way back once collapsed. Toggling calls
+  `main_pane.forget()`/`main_pane.insert(0, ...)` on the sidebar frame and persists the choice
+  immediately (`save_config`), independent of the Server currently selected (hiding the sidebar
+  never stops or deselects anything — `self.active_access` doesn't care whether the tree
+  widget is currently packed into the pane).
 - **Selecting a Server** (local or remote) points the 7 tabs at it — same tabs, same controls,
   whether the Server is on this computer or across the LAN. A running/stopped dot follows it
   in the sidebar; switching away never stops it.
