@@ -1,8 +1,9 @@
 # Bedrock Server Manager
 
-A comprehensive cross-platform GUI application for managing Minecraft Bedrock Dedicated Servers.
+A comprehensive cross-platform GUI application for managing Minecraft Bedrock Dedicated
+Servers — one, or a whole fleet across your home network.
 
-![Version](https://img.shields.io/badge/version-1.0.4-blue)
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -20,17 +21,26 @@ A comprehensive cross-platform GUI application for managing Minecraft Bedrock De
 
 Prefer to run from source? See **Quick Start** below. Build/release details are in [`packaging/README.md`](packaging/README.md).
 
+New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyday use.
+
 ---
 
 ## ✨ Features
 
+- **Manage one Server, or many** — a collapsible sidebar (hidden by default, so a single-Server
+  install looks just like the simple 1.x layout) lists every configured Server; several can run
+  simultaneously (on different ports), and a **🌐 Fleet overview** shows all of them across
+  every machine at a glance
+- **Remote administration over your LAN** — pair another PC (host/IP + a pairing token) and
+  administer its Servers from every tab exactly like a local one: live console, start/stop,
+  commands, worlds, players, configuration, backups. Or run a machine headless with `--agent`
 - **Server home tab** — Active Server Information at a glance, Start/Stop/Restart, live console
 - **Multi-world management** — create, switch (dropdown), rename and delete Worlds; shows each World's *last run on* version so you know what it needs
 - **Player management** — allowlist (who may join), roles (visitor/member/operator), and **per-player game mode** so survival and creative players share one Server
 - **Gamerules** — one-sleeper night skip, keep inventory, mob griefing, daylight cycle and more, read from the World and applied live
 - **Safe updates** — automatic backup before every update, selective file preservation
-- **Backup management** — per-Server backups: create, restore, auto-cleanup, optional compression
-- **Server configuration editor** — edit `server.properties` in the GUI
+- **Backup management** — per-Server backups (namespaced so Servers never mix): create, restore, auto-cleanup, optional compression
+- **Server configuration editor** — edit `server.properties` in the GUI, locally or on a paired remote Server
 - **Cross-platform** — Windows and Linux
 
 ---
@@ -57,6 +67,22 @@ python bedrock_updater_linux.py
 
 To install the desktop launcher on Linux, copy `bedrock-server-manager.desktop` to `~/.local/share/applications/` and update the `Exec=` path if needed.
 
+### Remote administration
+
+Any install can be paired: on the machine hosting Servers, go to **⚙️ Settings ▸ Remote
+Administration**, enable it, and note the port + pairing token. On the administering machine,
+use the sidebar's **➕ Machine** and enter that host's address, port, and token.
+
+To run a headless host (no GUI needed on that machine — e.g. a machine without a desktop):
+
+```bash
+python3 bedrock_updater_linux.py --agent [--config PATH] [--port N]
+```
+
+This is **LAN-only by design** — a plaintext session after an authenticated pairing
+handshake. Don't port-forward it; use a VPN (e.g. Tailscale/WireGuard) if you need to reach a
+Machine off your home network.
+
 ---
 
 ## 📁 Files
@@ -66,7 +92,9 @@ To install the desktop launcher on Linux, copy `bedrock-server-manager.desktop` 
 | `bedrock_updater_linux.py` | Main application |
 | `bedrock-server-manager.desktop` | Linux desktop launcher |
 | `packaging/` | Build scripts for the Windows installer & Linux AppImage |
+| `docs/USER-GUIDE.md` | Everyday-use walkthrough |
 | `docs/GUI-DESIGN.md` | GUI layout & terminology reference |
+| `docs/V2-MAJORDOMO-PLAN.md` | 2.0 multi-Server/multi-Machine design + build history |
 | `CHANGES.md` | Changelog |
 
 ---

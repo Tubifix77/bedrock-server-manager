@@ -4,6 +4,71 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [2.0.0] "Majordomo" — 2026-07-15
+
+The app grows from managing one Server to managing a fleet — several Servers on this
+machine, or on any machine on the home network that accepts remote administration, all from
+one GUI. Full design rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md) and the build
+history in `docs/V2-MAJORDOMO-PLAN.md`. See [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) for a
+plain walkthrough of everyday use.
+
+### Added
+- **Multi-Server, one app**: add as many local Servers as you like (sidebar's ➕ Server, each
+  with its own settings/backups/known players); several can run **simultaneously** — a
+  port-collision guard refuses to start two on the same port, and closing the app with several
+  running lists them all by name in one confirm before stopping them.
+- **Sidebar** (Machines → Servers), **collapsed by default** so a single-Server install looks
+  just like plain 1.0.4: a small "▶ Machines" button (always visible, top-left) expands it into
+  a resizable pane showing every configured Server, local and remote, with a running/stopped
+  dot; selecting one points the existing 7 tabs at it without disturbing anything else running
+  in the background. "◀ Hide" collapses it again; the choice is remembered across restarts.
+- **🌐 Fleet overview**: the sidebar's root shows every Server across every Machine in one
+  table — double-click to open one, or Start/Stop Selected without leaving the page.
+- **Remote administration over the LAN**: any install can host (Settings ▸ Remote
+  Administration: enable, port, pairing token with copy/regenerate) or run headless
+  (`--agent`), and any install can administer another one (sidebar's ➕ Machine: name,
+  host/IP, port, token, Test connection). A paired remote Server is driven from **every tab**
+  exactly like a local one — status, live console, start/stop/restart, commands, worlds
+  (including rename/delete), players, configuration (reads and saves), and backups. Security
+  is honest LAN-grade: an HMAC-authenticated pairing handshake, plaintext session after that —
+  documented as not internet-facing; use a VPN (Tailscale/WireGuard) to reach a Machine
+  off-LAN rather than port-forwarding.
+- **Machine page**: selecting a Machine in the sidebar shows its name/platform/version,
+  connection status, and its own Servers; remote Machines get a Remove Machine button.
+- Backups are now **namespaced per-Server** on disk so Servers sharing a parent folder never
+  mix backups — nothing existing gets moved, so a rollback to 1.0.4 still finds every backup
+  where it was.
+- Per-Server settings (backup policy, update toggles) moved off the app-level Settings tab
+  onto the Backups and Update tabs, where the data they configure actually lives.
+
+### Changed
+- Config is now schema **v2** (`server_profiles` + `active_profile` + `machines` +
+  `remote_admin`); an old 1.x config is migrated automatically on first run, with the original
+  kept as `*.v1.bak`.
+- Settings tab is now app-level only (interface prefs, Remote Administration, About); the
+  Server Folder picker there now only *relocates* the currently selected Server — adding one
+  is the sidebar's ➕ Server.
+- Default window size widened from 900×700 to **1200×700** — some tabs clipped buttons at the
+  old width.
+
+### Fixed
+- **GUI freeze opening the Server/Worlds/Update tabs** against a large, actively-played world:
+  three places (`update_server_info`, `refresh_worlds`, `refresh_world_combo`) computed World
+  sizes synchronously on the UI thread on every tab visit; that disk walk is slow when the real
+  engine is concurrently writing to the same World, and got dramatically worse than in testing
+  (which only ever used small, freshly-generated Worlds). Now backgrounded like every other
+  slow operation in the app.
+
+### Deliberately out of scope
+- **Update stays local-only.** It wipes and replaces the entire Server install; running
+  something that destructive blind over a network link — where a dropped connection mid-copy
+  could leave a Server half-wiped with no one there to notice — isn't a risk worth taking.
+  Everything else works local or remote identically.
+- Internet exposure/TLS, cross-machine backup copies, uploading ZIPs to a host (a host
+  downloads its own updates), and autostart-at-boot automation are not part of 2.0.
+
+---
+
 ## [1.0.4] — 2026-07-13
 
 Player management and per-World gamerules — the two systems that live *outside*
