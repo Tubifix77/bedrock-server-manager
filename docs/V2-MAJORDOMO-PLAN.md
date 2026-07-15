@@ -33,14 +33,33 @@
 > on shutdown (defensible for a long-running host service; the GUI host stops them via
 > on_close). Test rigs removed; the downloaded zip sits in the session scratchpad.
 >
+> **DEPLOYED to the family laptop (2026-07-15), and one real production bug found + fixed
+> after deploy:** `2.0.0` replaced the laptop's live `1.0.4` (`pre-2.0-backup/` holds the exact
+> pre-deploy script + a manual config backup); migration verified correct via two screenshots
+> across a close/reopen cycle. Once the family restarted their real (large, actively-played)
+> world, opening the Server/Worlds/Update tabs froze the whole GUI for seconds at a time,
+> worsening with repeated clicks — never caught in system testing because the test worlds were
+> tiny and freshly generated with no concurrent writer. Root cause: `update_server_info()`,
+> `refresh_worlds()`, and `refresh_world_combo()` all called `get_info()`/`list_worlds()`
+> **synchronously on the Tk main thread** on every tab open; each walks the whole `worlds/`
+> folder (`get_folder_size`) to compute sizes, which is slow against a real world with the
+> engine concurrently writing to it (autosave/compaction contention) — and `update_server_info`
+> was redundantly triggering the walk **three times** per visit. Fixed (`c2786fa`) by moving all
+> three onto background threads with the app's existing worker-thread + `root.after` pattern,
+> guarded against a Server-switch landing a stale result; dropped the redundant third
+> `get_info()` call in `refresh_backup_header()` by reusing data the caller already fetched.
+> Verified live on the laptop: main thread idle (not busy-spinning) through 7 rapid tab
+> switches and a mouse-drag text selection in the Update tab's ZIP field (the user's original
+> repro), where before the fix the main thread was pegged busy-spinning. Engine was stopped
+> throughout this fix+redeploy per the standing "never touch the running family server" rule;
+> the GUI process was restarted (old script backed up to `pre-fix-freeze-backup/`) only once
+> the user confirmed no engine was running.
+>
 > **The code is done. What's left is entirely the user's call, not more building:**
-> 1. A real loopback test on the dev PC (two real BDS installs, not stubs) — recommended before
->    trusting this on the family's laptop.
-> 2. Deploy to the laptop per the existing staged-deploy workflow (`pre-2.0-backup/`), migrate
->    its real config, family regression test.
-> 3. Only on the user's **explicit go**: `git tag v2.0.0 && git push origin v2.0.0` → CI builds
+> 1. Family regression test of 2.0.0 (now with the freeze fix) during real play.
+> 2. Only on the user's **explicit go**: `git tag v2.0.0 && git push origin v2.0.0` → CI builds
 >    both installers → hand-write the release notes (the workflow leaves the body empty).
-> 4. Whenever ready: push `v2-majordomo` to GitHub (still local-only as of this status line)
+> 3. Whenever ready: push `v2-majordomo` to GitHub (still local-only as of this status line)
 >    and/or merge to `main`, per the "two product lines" branching decision above.
 >
 > **Remaining known gaps (by design, not oversight):** remote-triggered *Update* is
