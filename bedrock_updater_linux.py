@@ -90,7 +90,7 @@ DEFAULT_SETTINGS = {
     "auto_start_server_after_update": False,
     "show_notifications": True,
     "dark_mode": False,
-    "window_geometry": "900x700",
+    "window_geometry": "1200x700",
     "check_updates_on_start": True,
     "server_profiles": {},
     "active_profile": None,
@@ -2062,7 +2062,7 @@ class BedrockUpdaterApp:
     
     def setup_ui(self):
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
-        self.root.geometry(self.config.get("window_geometry", "900x700"))
+        self.root.geometry(self.config.get("window_geometry", "1200x700"))
         self.root.minsize(800, 600)
         self.set_window_icon()
 
