@@ -4,22 +4,24 @@ All notable changes to this project will be documented here.
 
 ---
 
-## [2.0.0] "Majordomo" — 2026-07-14
+## [2.0.0] "Majordomo" — 2026-07-15
 
 The app grows from managing one Server to managing a fleet — several Servers on this
 machine, or on any machine on the home network that accepts remote administration, all from
 one GUI. Full design rationale in [`docs/GUI-DESIGN.md`](docs/GUI-DESIGN.md) and the build
-history in `docs/V2-MAJORDOMO-PLAN.md`.
+history in `docs/V2-MAJORDOMO-PLAN.md`. See [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) for a
+plain walkthrough of everyday use.
 
 ### Added
 - **Multi-Server, one app**: add as many local Servers as you like (sidebar's ➕ Server, each
   with its own settings/backups/known players); several can run **simultaneously** — a
   port-collision guard refuses to start two on the same port, and closing the app with several
   running lists them all by name in one confirm before stopping them.
-- **Sidebar** (Machines → Servers) replaces the single Server-Folder assumption: a resizable
-  left pane always shows every configured Server, local and remote, with a running/stopped
+- **Sidebar** (Machines → Servers), **collapsed by default** so a single-Server install looks
+  just like plain 1.0.4: a small "▶ Machines" button (always visible, top-left) expands it into
+  a resizable pane showing every configured Server, local and remote, with a running/stopped
   dot; selecting one points the existing 7 tabs at it without disturbing anything else running
-  in the background.
+  in the background. "◀ Hide" collapses it again; the choice is remembered across restarts.
 - **🌐 Fleet overview**: the sidebar's root shows every Server across every Machine in one
   table — double-click to open one, or Start/Stop Selected without leaving the page.
 - **Remote administration over the LAN**: any install can host (Settings ▸ Remote
@@ -46,6 +48,16 @@ history in `docs/V2-MAJORDOMO-PLAN.md`.
 - Settings tab is now app-level only (interface prefs, Remote Administration, About); the
   Server Folder picker there now only *relocates* the currently selected Server — adding one
   is the sidebar's ➕ Server.
+- Default window size widened from 900×700 to **1200×700** — some tabs clipped buttons at the
+  old width.
+
+### Fixed
+- **GUI freeze opening the Server/Worlds/Update tabs** against a large, actively-played world:
+  three places (`update_server_info`, `refresh_worlds`, `refresh_world_combo`) computed World
+  sizes synchronously on the UI thread on every tab visit; that disk walk is slow when the real
+  engine is concurrently writing to the same World, and got dramatically worse than in testing
+  (which only ever used small, freshly-generated Worlds). Now backgrounded like every other
+  slow operation in the app.
 
 ### Deliberately out of scope
 - **Update stays local-only.** It wipes and replaces the entire Server install; running

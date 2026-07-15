@@ -21,11 +21,14 @@ Servers — one, or a whole fleet across your home network.
 
 Prefer to run from source? See **Quick Start** below. Build/release details are in [`packaging/README.md`](packaging/README.md).
 
+New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyday use.
+
 ---
 
 ## ✨ Features
 
-- **Manage one Server, or many** — a sidebar lists every configured Server; several can run
+- **Manage one Server, or many** — a collapsible sidebar (hidden by default, so a single-Server
+  install looks just like the simple 1.x layout) lists every configured Server; several can run
   simultaneously (on different ports), and a **🌐 Fleet overview** shows all of them across
   every machine at a glance
 - **Remote administration over your LAN** — pair another PC (host/IP + a pairing token) and
@@ -89,6 +92,7 @@ Machine off your home network.
 | `bedrock_updater_linux.py` | Main application |
 | `bedrock-server-manager.desktop` | Linux desktop launcher |
 | `packaging/` | Build scripts for the Windows installer & Linux AppImage |
+| `docs/USER-GUIDE.md` | Everyday-use walkthrough |
 | `docs/GUI-DESIGN.md` | GUI layout & terminology reference |
 | `docs/V2-MAJORDOMO-PLAN.md` | 2.0 multi-Server/multi-Machine design + build history |
 | `CHANGES.md` | Changelog |
