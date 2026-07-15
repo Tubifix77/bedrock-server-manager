@@ -53,10 +53,25 @@
 > repro), where before the fix the main thread was pegged busy-spinning. Engine was stopped
 > throughout this fix+redeploy per the standing "never touch the running family server" rule;
 > the GUI process was restarted (old script backed up to `pre-fix-freeze-backup/`) only once
-> the user confirmed no engine was running.
+> the user confirmed no engine was running. **Retested with the real engine actually running**
+> (user's explicit ask, so the retest matched the original bug conditions exactly): started
+> Boas Familie Server for real, then repeated the Update-tab ZIP-field drag-select plus ~80
+> rapid tab switches (20 full cycles) over about a minute while it stayed up — main thread
+> idle throughout, ~0.8% CPU. Confirmed fixed under the real failure conditions, not just at
+> rest.
+>
+> **User verdict (2026-07-15): retracting the 1.0.4-rollback plan — keeping 2.0.0 permanently.**
+> The multi-Server/Fleet/"This computer" sidebar is "just a bonus extra"; the daily-use ask was
+> a plain single-Server look. Two small UX follow-ups landed same-day: (1) `cf930ff` widened
+> the default window 900x700 → 1200x700 (buttons were clipped in some tabs at the old width);
+> (2) `c436d30` made the sidebar collapsible, **collapsed by default** (new `sidebar_collapsed`
+> setting, defaults `True`), with a small always-visible "▶ Machines" / "◀ Hide" toggle button
+> above the pane — so the app now opens looking like plain 1.0.4, with Fleet/Machines one click
+> away. Both changes deployed to the laptop and confirmed rendering correctly.
 >
 > **The code is done. What's left is entirely the user's call, not more building:**
-> 1. Family regression test of 2.0.0 (now with the freeze fix) during real play.
+> 1. Family regression test of 2.0.0 (now with the freeze fix + the two UX tweaks) during real
+>    play.
 > 2. Only on the user's **explicit go**: `git tag v2.0.0 && git push origin v2.0.0` → CI builds
 >    both installers → hand-write the release notes (the workflow leaves the body empty).
 > 3. Whenever ready: push `v2-majordomo` to GitHub (still local-only as of this status line)
