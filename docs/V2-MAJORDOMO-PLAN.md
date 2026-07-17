@@ -69,13 +69,15 @@
 > above the pane — so the app now opens looking like plain 1.0.4, with Fleet/Machines one click
 > away. Both changes deployed to the laptop and confirmed rendering correctly.
 >
-> **The code is done. What's left is entirely the user's call, not more building:**
-> 1. Family regression test of 2.0.0 (now with the freeze fix + the two UX tweaks) during real
->    play.
-> 2. Only on the user's **explicit go**: `git tag v2.0.0 && git push origin v2.0.0` → CI builds
->    both installers → hand-write the release notes (the workflow leaves the body empty).
-> 3. Whenever ready: push `v2-majordomo` to GitHub (still local-only as of this status line)
->    and/or merge to `main`, per the "two product lines" branching decision above.
+> **RELEASED (2026-07-15).** Docs finalized (new `docs/USER-GUIDE.md`, CHANGES.md/README
+> updated), `v2-majordomo` merged into `main` (`69e8392`, clean, no conflicts — even the
+> independent `setup_logging()` UTF-8 fix that had landed on `master` in the meantime merged in
+> transparently since `v2-majordomo` already carried the same fix), pushed, tagged `v2.0.0`, and
+> the release workflow ran green — Windows installer + Linux AppImage both built and attached to
+> the [v2.0.0 GitHub Release](https://github.com/Tubifix77/bedrock-server-manager/releases/tag/v2.0.0).
+> **User's live regression test (2026-07-15):** hadn't touched the Majordomo/Fleet features at
+> all, but confirmed day-to-day single-Server use "just works like it used to" — exactly the
+> path that matters most, since it's what the family actually depends on.
 >
 > **Remaining known gaps (by design, not oversight):** remote-triggered *Update* is
 > permanently local-only (see Rationale in docs/GUI-DESIGN.md and CLAUDE.md — running the
