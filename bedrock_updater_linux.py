@@ -2460,13 +2460,31 @@ class BedrockUpdaterApp:
             pass
         self.console_text.see(tk.END)
         self.console_text.config(state=tk.DISABLED)
+        # Seed running state from the Machine's last-reported server list
+        # (authoritative + synchronous, no round-trip); update_server_info()
+        # below re-confirms it from a fresh get_info(). Without this the widget
+        # defaults to "stopped" until the user presses Start -- wrong for a
+        # remote Server that's been running on the host for hours and is never
+        # started from here (status-change events only fire on start/stop, so
+        # a long-running server never announces itself to a late-joining admin).
+        running = self._remote_server_running(machine_id, server_id)
+        self.active_access.note_status(running)
         try:
-            self.update_server_status("running" if self.active_access.is_running() else "stopped")
+            self.update_server_status("running" if running else "stopped")
             self.update_server_info()
         except Exception as e:
             self.log(f"Could not load remote Server: {e}", "error")
         self._refresh_remote_dependent_tabs()
         self.refresh_sidebar()
+
+    def _remote_server_running(self, machine_id: str, server_id: str) -> bool:
+        """The host's last-reported running state for one of its Servers, from
+        the cached machine server list (populated on connect and refreshed by
+        'servers_changed' events) -- no network round-trip."""
+        for sv in self._remote_state.get(machine_id, {}).get("servers", []):
+            if sv.get("id") == server_id:
+                return bool(sv.get("running"))
+        return False
 
     def _refresh_remote_dependent_tabs(self):
         """After selecting a remote Server, refresh the tabs that have been
@@ -4185,6 +4203,12 @@ class BedrockUpdaterApp:
             f"Worlds: {info.get('worlds_count', len(worlds))} | Total size: {info.get('worlds_size', '?')}",
         ]
         self.info_text.config(text="\n".join(info_lines))
+        # info["running"] is authoritative (the real engine's state, local or
+        # from the host), so sync the Start/Stop/status widgets to it here --
+        # this is what lets a running remote Server show "Running" without
+        # waiting for a status-change event, and self-heals the state on every
+        # Server-tab visit.
+        self.update_server_status("running" if info.get("running") else "stopped")
         self.refresh_world_combo()
         self.refresh_backup_header(info.get("name", "Server"))  # reuse info -- avoid a second get_info() disk walk
         self.update_network_info()
