@@ -2144,7 +2144,10 @@ class BedrockUpdaterApp:
         self.server_status_label.pack(side=tk.RIGHT)
 
     def setup_sidebar(self, parent):
-        ttk.Label(parent, text="🖥 This computer", font=("TkDefaultFont", 9, "bold")).pack(
+        # Heading over the whole tree, which lists ALL Machines (this computer +
+        # any paired remote ones). The "This computer" *node* inside the tree is
+        # a separate thing -- one Machine among possibly several.
+        ttk.Label(parent, text="🖥 Machines", font=("TkDefaultFont", 9, "bold")).pack(
             anchor="w", padx=6, pady=(6, 2))
         self.sidebar_tree = ttk.Treeview(parent, show="tree", height=15)
         self.sidebar_tree.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
