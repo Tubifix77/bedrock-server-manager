@@ -58,6 +58,14 @@ plain walkthrough of everyday use.
   engine is concurrently writing to the same World, and got dramatically worse than in testing
   (which only ever used small, freshly-generated Worlds). Now backgrounded like every other
   slow operation in the app.
+- **A running remote Server showed as "Stopped"** in the administrator until you pressed Start
+  locally. The host only pushes status-change events on start/stop, so a Server that had been
+  running for hours never announced itself to a late-joining admin, and selection fell back to a
+  cached flag that was always `False`. The running state is now seeded from the Machine's
+  reported server list on selection and re-confirmed from the authoritative `get_info().running`
+  — correct for local and remote alike. (Found during the first real LAN smoke test.)
+- **Sidebar heading** over the Machines tree said "This computer"; it now reads "Machines"
+  (the tree lists every Machine — the "This computer" node inside it is a separate thing).
 
 ### Deliberately out of scope
 - **Update stays local-only.** It wipes and replaces the entire Server install; running
