@@ -79,6 +79,20 @@
 > all, but confirmed day-to-day single-Server use "just works like it used to" — exactly the
 > path that matters most, since it's what the family actually depends on.
 >
+> **First real remote-admin smoke test (2026-07-17): PASSED — two bugs found and fixed.** The
+> Windows dev PC (administrator) paired to the Linux laptop (host) over the LAN while the family
+> server was live and actually being played: enabled Settings ▸ Remote Administration on the
+> laptop (in-process listener on `0.0.0.0:19190`, no effect on the running engine), added the
+> laptop via ➕ Machine on Windows, and drove the remote Server from every tab — live console
+> streamed real player join/leave events, all with the engine never disturbed (both fixes were
+> client-side, so the host needed no restart). Bugs fixed + pushed to `main`: (1) `cd4bb75` a
+> running remote Server showed "Stopped" until you pressed Start — the host only pushes status
+> *change* events, so a long-running server never announces itself to a late-joining admin;
+> now seeded from the Machine's reported server list on selection and re-confirmed from the
+> authoritative `get_info().running`. (2) `2650bfd` sidebar heading "This computer" → "Machines".
+> The laptop's own copy was later synced to this version (2026-07-17) once the family server was
+> idle. All three copies (dev PC, `main`, laptop) are byte-identical.
+>
 > **Remaining known gaps (by design, not oversight):** remote-triggered *Update* is
 > permanently local-only (see Rationale in docs/GUI-DESIGN.md and CLAUDE.md — running the
 > destructive wipe/replace pipeline blind over a network link isn't a risk worth taking).
