@@ -66,6 +66,12 @@ plain walkthrough of everyday use.
   — correct for local and remote alike. (Found during the first real LAN smoke test.)
 - **Sidebar heading** over the Machines tree said "This computer"; it now reads "Machines"
   (the tree lists every Machine — the "This computer" node inside it is a separate thing).
+- **Double-launch now raises the existing window instead of starting a rival.** Opening the app
+  a second time (e.g. the desktop shortcut while one's already running from the taskbar) used to
+  spin up a second GUI; the two then fought over the one config file and the one tracked engine,
+  stranding the newer session. The GUI is now single-instance (a loopback-only lock on
+  `127.0.0.1:49732`): a second launch surfaces the running window and exits. If something
+  unrelated holds that port, the app still launches normally rather than refusing to open.
 
 ### Deliberately out of scope
 - **Update stays local-only.** It wipes and replaces the entire Server install; running

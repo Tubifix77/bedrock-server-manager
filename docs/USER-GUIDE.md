@@ -115,3 +115,7 @@ mid-copy. Walk over to (or remote-desktop into) the machine itself to run an upd
   on Windows. Logs live right beside it.
 - **I want the old single-Server look back permanently.** That's the default — the sidebar
   starts collapsed. If you've expanded it, just click **◀ Hide**.
+- **I clicked the icon again and no new window appeared.** That's intentional: the app runs a
+  single window. Launching it again (shortcut, taskbar, etc.) just brings the existing window to
+  the front instead of opening a second copy — two copies would fight over the same settings and
+  the same running server.
