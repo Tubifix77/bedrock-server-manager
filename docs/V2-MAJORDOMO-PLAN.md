@@ -92,6 +92,26 @@
 > authoritative `get_info().running`. (2) `2650bfd` sidebar heading "This computer" → "Machines".
 > The laptop's own copy was later synced to this version (2026-07-17) once the family server was
 > idle. All three copies (dev PC, `main`, laptop) are byte-identical.
+> (Topology note: the SSH-reachable Linux box is the user's **Debian homelab server** that hosts
+> the engine + GUI — earlier lines calling it "the laptop" are loose; the family play on separate
+> client devices.)
+>
+> **Single-instance GUI (`8828af7`/`5fec9d0`, 2026-08-05 verified on both OSes).** From real-user
+> feedback: launching the app a second time (desktop shortcut while one was already open from the
+> taskbar) used to start a rival GUI, and the two fought over the one config file + the one
+> tracked engine, stranding the newer session. The GUI now binds a loopback-only lock
+> (`127.0.0.1:49732`) on startup; a second launch fails to bind, pings the running instance to
+> raise/restore its window (deiconify + lift + focus_force + brief topmost toggle), and exits.
+> One OS-agnostic mechanism (chosen over a PID file — a crash frees the port automatically, no
+> stale lock — and over D-Bus, which isn't stdlib and wouldn't cover Windows); loopback bind
+> raises no firewall prompt; **safe failure mode** — if something unrelated holds the port the app
+> still launches normally rather than refusing to open. Scoped to the GUI (`--agent` unaffected,
+> so an agent + a GUI still coexist). **Verified on Windows** (second launch exits, no rival
+> window) **and on Linux/XFCE** (2026-08-05, on the real homelab): minimized instance A, launched
+> B, and B exited while A un-minimized and raised (`WM_STATE` Iconic→Normal) with window count
+> staying 1 — tested **both with the server stopped and with the real engine running**, and in the
+> running case the engine was completely untouched (same pid, still a child of the one GUI). This
+> is the behaviour that now holds on a fresh install of either platform.
 >
 > **Remaining known gaps (by design, not oversight):** remote-triggered *Update* is
 > permanently local-only (see Rationale in docs/GUI-DESIGN.md and CLAUDE.md — running the

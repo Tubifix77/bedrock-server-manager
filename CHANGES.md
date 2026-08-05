@@ -72,6 +72,7 @@ plain walkthrough of everyday use.
   stranding the newer session. The GUI is now single-instance (a loopback-only lock on
   `127.0.0.1:49732`): a second launch surfaces the running window and exits. If something
   unrelated holds that port, the app still launches normally rather than refusing to open.
+  Applies on **both Windows and Linux** — verified on each, with the server stopped and running.
 
 ### Deliberately out of scope
 - **Update stays local-only.** It wipes and replaces the entire Server install; running
