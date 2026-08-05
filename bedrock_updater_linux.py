@@ -57,6 +57,19 @@ APP_AUTHOR = "Tue Wincentz Boas - Built with Claude AI & Gemini 3"
 CONFIG_FILENAME = ".bedrock_updater_config.json"
 MINECRAFT_DOWNLOAD_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
 
+# Single-instance guard. The GUI binds this loopback-only port on startup; a
+# second launch (e.g. the desktop shortcut AND the taskbar icon) fails to bind,
+# pings the running instance to raise its window, and exits -- instead of
+# spinning up a rival GUI that would fight over the one config file and the one
+# tracked engine (which is exactly what stranded a real user's session). Bound
+# to 127.0.0.1 only, so no Windows firewall prompt; distinct from the
+# remote-admin port and any BDS server port; in the private/dynamic range so it
+# won't clash with a well-known service. A crashed instance frees it
+# automatically (no stale-lock problem, unlike a PID file).
+SINGLE_INSTANCE_PORT = 49732
+_SI_HELLO = b"BSM-FOCUS\n"
+_SI_ACK = b"BSM-OK\n"
+
 # Files/folders to preserve during update
 DEFAULT_PRESERVE_ITEMS = {
     "worlds": {"enabled": True, "description": "World save data (critical!)", "critical": True},
@@ -5007,6 +5020,85 @@ def run_agent(config_path=None, port=None):
     AgentApp(config).run(use_port)
 
 
+# ---------------------------------------------------------------------------
+# Single-instance guard (see SINGLE_INSTANCE_PORT)
+# ---------------------------------------------------------------------------
+def _bring_window_to_front(root):
+    """Restore (if minimized) and raise the main window to the foreground.
+    The brief -topmost toggle is what reliably surfaces it on both Windows and
+    Linux/XFCE without leaving it pinned always-on-top."""
+    try:
+        root.deiconify()
+        root.attributes("-topmost", True)
+        root.lift()
+        root.focus_force()
+        root.after(300, lambda: root.attributes("-topmost", False))
+    except Exception:
+        pass
+
+
+def _bind_single_instance():
+    """Bind the single-instance loopback port. Returns the listening socket if
+    this is the first GUI instance, or None if another already holds it."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+    except OSError:
+        s.close()
+        return None
+    s.listen(5)
+    return s
+
+
+def _serve_single_instance(sock, on_focus):
+    """Answer pings from later launches: confirm we're this app (so the later
+    launch knows to defer to us and quit) and raise our window. Runs on a daemon
+    thread; on_focus is expected to marshal onto the tkinter main thread."""
+    def _serve():
+        while True:
+            try:
+                conn, _ = sock.accept()
+            except OSError:
+                return  # socket closed at shutdown
+            try:
+                data = conn.recv(64)
+                if data.strip() == _SI_HELLO.strip():
+                    try:
+                        conn.sendall(_SI_ACK)
+                    except OSError:
+                        pass
+                    on_focus()
+            except OSError:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+    threading.Thread(target=_serve, daemon=True).start()
+
+
+def _ping_existing_instance() -> bool:
+    """Ask an already-running instance to raise its window. Returns True only if
+    a running instance of THIS app answered (caller should then exit); False if
+    nothing, or something unrelated, is on the port (caller should launch)."""
+    try:
+        c = socket.create_connection(("127.0.0.1", SINGLE_INSTANCE_PORT), timeout=2)
+    except OSError:
+        return False
+    try:
+        c.sendall(_SI_HELLO)
+        c.settimeout(2)
+        return c.recv(len(_SI_ACK)).strip() == _SI_ACK.strip()
+    except OSError:
+        return False
+    finally:
+        try:
+            c.close()
+        except OSError:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}")
     parser.add_argument("--agent", action="store_true",
@@ -5026,10 +5118,23 @@ def main():
               "Run headless with:  python bedrock_updater_linux.py --agent", file=sys.stderr)
         sys.exit(1)
 
+    # Single-instance guard: if a GUI is already running, raise its window and
+    # exit rather than starting a rival that would fight over the one config
+    # file and the one tracked engine (see SINGLE_INSTANCE_PORT).
+    lock = _bind_single_instance()
+    if lock is None:
+        if _ping_existing_instance():
+            return  # handed off to the already-running instance
+        # Port held by something unrelated -> launch anyway, without the guard.
+
     # className sets the window's WM_CLASS so Linux desktops (e.g. GNOME) can match
     # the running window to bedrock-server-manager.desktop and reuse its icon.
     root = tk.Tk(className="bedrock-server-manager")
     app = BedrockUpdaterApp(root)
+    if lock is not None:
+        # Keep the socket bound for our whole lifetime, and answer later launches.
+        root._single_instance_lock = lock
+        _serve_single_instance(lock, lambda: root.after(0, lambda: _bring_window_to_front(root)))
     root.mainloop()
 
 if __name__ == "__main__":
