@@ -73,6 +73,15 @@ plain walkthrough of everyday use.
   `127.0.0.1:49732`): a second launch surfaces the running window and exits. If something
   unrelated holds that port, the app still launches normally rather than refusing to open.
   Applies on **both Windows and Linux** — verified on each, with the server stopped and running.
+- **Updates no longer drop settings that a new Bedrock Server Version introduces.** Update keeps
+  your `server.properties`, which meant any key Mojang added was silently lost — most painfully
+  `transport` in 1.26.5x: without it BDS falls back to RakNet, logs a *TRANSPORT TYPE ERROR*
+  ("not set to NetherNet"), and current clients can't connect. Update now merges in every key the
+  new stock `server.properties` has that yours lacks (with Mojang's comment block, logged in the
+  Activity Log); your existing values always win and obsolete keys are left alone. For a Server
+  already hit by this, the app spots the console error and offers (after a yes/no) to add
+  `transport=nethernet` — local or remote; restart the Server to apply. A deliberate
+  `transport=raknet` is respected.
 
 ### Deliberately out of scope
 - **Update stays local-only.** It wipes and replaces the entire Server install; running

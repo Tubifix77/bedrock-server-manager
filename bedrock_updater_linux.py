@@ -569,6 +569,41 @@ def save_server_properties(filepath: Path, props: Dict[str, str]) -> bool:
         return False
 
 
+def merge_new_server_properties(fresh_text: str, target: Path) -> List[Tuple[str, str]]:
+    """Bring settings introduced by a new Bedrock Server Version into a
+    server.properties that an update just restored from backup.
+
+    The update preserves the user's server.properties wholesale, which would
+    silently drop any key Mojang adds -- e.g. `transport` in 1.26.5x, without
+    which BDS falls back to RakNet and current clients can't connect. For each
+    key in the new stock file (`fresh_text`) that `target` lacks, append Mojang's
+    own block (the key line plus the comment lines under it). The user's existing
+    values always win and obsolete keys are left alone. Returns the (key, value)
+    pairs added."""
+    blocks = []  # [key, value, lines]
+    current = None
+    for line in fresh_text.splitlines():
+        s = line.strip()
+        if s and not s.startswith('#') and '=' in s:
+            key, value = s.split('=', 1)
+            current = [key.strip(), value.strip(), [line.rstrip()]]
+            blocks.append(current)
+        elif current is not None and s.startswith('#'):
+            current[2].append(line.rstrip())
+        else:
+            current = None  # a blank line (or the file header) ends a block
+    existing = parse_server_properties(target)
+    missing = [b for b in blocks if b[0] not in existing]
+    if not missing or not target.exists():
+        return []
+    with open(target, 'r') as f:
+        text = f.read()
+    appended = "\n\n".join("\n".join(lines) for _, _, lines in missing)
+    with open(target, 'w') as f:
+        f.write(text.rstrip("\n") + "\n\n" + appended + "\n")
+    return [(k, v) for k, v, _ in missing]
+
+
 # ============================================================================
 # BACKUP MANAGER
 # ============================================================================
@@ -1974,6 +2009,9 @@ class BedrockUpdaterApp:
         # main loop" on modern Python), so workers only enqueue here and the
         # MAIN thread drains it via a self-scheduled poll -- the robust pattern.
         self._remote_queue: "queue.Queue" = queue.Queue()
+        # Servers (by access object) already checked this session for the
+        # "not set to NetherNet" console warning, so the fix is offered once.
+        self._transport_checked: set = set()
         # The Server currently shown in the tabs, as a uniform access object
         # (a local ServerService or a RemoteServerAccess). active_remote is
         # (machine_id, server_id) when remote, else None.
@@ -2438,6 +2476,7 @@ class BedrockUpdaterApp:
         elif etype == "console" and viewing:
             for line in ev.get("data", {}).get("lines", []):
                 self.console_log(line)
+                self._check_transport_warning(line)
         elif etype == "status":
             running = ev.get("data", {}).get("running", False)
             if viewing and self.active_access:
@@ -3821,6 +3860,52 @@ class BedrockUpdaterApp:
         if self.config.get("active_profile") == profile_id:
             self.console_log(line)
             self._scan_console_line(line)
+            self._check_transport_warning(line)
+
+    def _check_transport_warning(self, line: str):
+        """BDS 1.26.5x+ accepts players only over NetherNet and warns on the
+        console when server.properties isn't set to it. The usual cause is an
+        update (by an older manager, or before merge_new_server_properties
+        existed) that kept an old server.properties with no `transport` key at
+        all -- BDS then falls back to RakNet and clients get a transport error.
+        Offer the one-line fix once per Server per session. A deliberate
+        `transport=raknet` (the workaround for Mojang bug BDS-23108) is left
+        alone."""
+        if "not set to nethernet" not in line.lower():
+            return
+        acc = self.active_access
+        if acc is None or id(acc) in self._transport_checked:
+            return
+        self._transport_checked.add(id(acc))
+        # After the current console burst, not in the middle of it.
+        self.root.after(0, lambda: self._offer_transport_fix(acc))
+
+    def _offer_transport_fix(self, acc):
+        if self.active_access is not acc:
+            return
+        try:
+            if "transport" in acc.read_properties():
+                return  # explicitly set (e.g. raknet on purpose) -- respect it
+        except Exception:
+            return
+        if not messagebox.askyesno("NetherNet required",
+                "This Bedrock Server Version only lets players connect over NetherNet, but "
+                "server.properties has no 'transport' setting, so players get a transport "
+                "error.\n\n(This usually happens when an update kept an older "
+                "server.properties.)\n\nAdd transport=nethernet now? It takes effect the next "
+                "time the Server starts, so restart it afterwards."):
+            return
+        try:
+            ok = acc.write_properties({"transport": "nethernet"})
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not update server.properties:\n{e}")
+            return
+        if not ok:
+            messagebox.showerror("Error", "Could not update server.properties.")
+            return
+        self.log("Added transport=nethernet to server.properties — restart the Server to apply.", "success")
+        if hasattr(self, 'properties_editor') and not self.properties_editor.has_unsaved_changes():
+            self.properties_editor.load_properties()
 
     def _on_service_status(self, profile_id: str, status: str):
         """A start/stop from any Server. Refresh the sidebar dots always;
@@ -4332,6 +4417,15 @@ class BedrockUpdaterApp:
                     if i % 100 == 0:
                         self.set_progress(50 + (i / len(members)) * 40)
             self.log(f"Extracted {len(members)} files", "success")
+            # Keep the new version's stock server.properties before the restore
+            # below overwrites it with the user's old one, so any settings this
+            # Bedrock Server Version introduced can be merged back in afterwards.
+            fresh_props_text = None
+            if not is_fresh and "server.properties" in backed_up:
+                fresh_props = server_path / "server.properties"
+                if fresh_props.exists():
+                    with open(fresh_props, 'r') as f:
+                        fresh_props_text = f.read()
             if not is_fresh:
                 self.set_progress(90, "Restoring preserved files...")
                 self.log("Restoring preserved files...", "info")
@@ -4349,6 +4443,11 @@ class BedrockUpdaterApp:
                             else: dest.unlink()
                         if source.is_dir(): shutil.copytree(source, dest)
                         else: shutil.copy2(source, dest)
+            if fresh_props_text:
+                added = merge_new_server_properties(fresh_props_text, server_path / "server.properties")
+                for key, value in added:
+                    self.log(f"New setting in this Bedrock Server Version, added to server.properties: "
+                             f"{key}={value}", "info")
             if not is_fresh and self.config.get("auto_cleanup_backups", True):
                 deleted = self.backup_manager.cleanup_old_backups(self.config.get("max_backups", 5))
                 if deleted > 0:

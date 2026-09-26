@@ -111,6 +111,13 @@ mid-copy. Walk over to (or remote-desktop into) the machine itself to run an upd
   prints its own error there (often a port already in use, or a corrupt World). The port
   guard stops you from starting two of your *own* Servers on the same port, but something else
   on your machine using that port will still show up as an engine-side failure.
+- **After updating, players get a "transport" error / the console shows TRANSPORT TYPE ERROR
+  ("not set to NetherNet").** Bedrock 1.26.5x only accepts players over NetherNet, which needs
+  `transport=nethernet` in `server.properties`. Updates made with this version of the app add it
+  automatically; if you updated with an older one, the app offers to add it when it sees the
+  error — say yes, then press **Restart**. NetherNet listens on **TCP** `server-port` (19132) plus
+  UDP, so if you have a firewall, allow TCP 19132 as well as UDP. If LAN discovery doesn't show the
+  Server, add it manually by IP address and port.
 - **Where's the config file?** `~/.config/bedrock-updater/` on Linux, `%APPDATA%\bedrock-updater\`
   on Windows. Logs live right beside it.
 - **I want the old single-Server look back permanently.** That's the default — the sidebar
