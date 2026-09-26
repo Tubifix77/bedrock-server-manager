@@ -4,6 +4,45 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [2.0.1] "NetherNet" — 2026-09-26
+
+Keeps the manager working with **Bedrock Server Version 1.26.5x**, where Mojang made NetherNet
+the only transport players can connect over — plus fixes from the first real-world LAN use of
+2.0.
+
+### Fixed
+- **Players can't connect after updating to 1.26.5x ("TRANSPORT TYPE ERROR … not set to
+  NetherNet").** Update keeps your `server.properties`, which meant any setting Mojang added in a
+  new version was silently lost — here `transport`, whose stock value in 1.26.5x is `nethernet`.
+  Without it BDS falls back to RakNet and current clients get a transport error. **Update now
+  merges in every setting the new version's stock `server.properties` has that yours lacks**
+  (with Mojang's comment block, and each one named in the Activity Log). Your existing values
+  always win, obsolete keys are left alone, and this covers any future setting Mojang adds, not
+  just `transport`.
+- **Already updated with an older manager?** When the console shows that NetherNet error and
+  `transport` is missing, the app offers — after a yes/no — to add `transport=nethernet` (works
+  for local and remote Servers); press **Restart** to apply. A deliberate `transport=raknet` is
+  respected. Note NetherNet listens on **TCP** `server-port` (19132) as well as UDP, so a firewall
+  must allow TCP 19132 too.
+- **A running remote Server showed as "Stopped"** in the administrator until you pressed Start
+  locally. The host only pushes status-change events on start/stop, so a Server that had been
+  running for hours never announced itself to a late-joining admin. The running state is now
+  seeded from the Machine's reported server list on selection and re-confirmed from the
+  authoritative `get_info().running` — correct for local and remote alike.
+- **Sidebar heading** over the Machines tree said "This computer"; it now reads "Machines"
+  (the tree lists every Machine — the "This computer" node inside it is a separate thing).
+
+### Added
+- **Single window: launching the app again raises the one that's already open.** Opening it a
+  second time (e.g. the desktop shortcut while one's already running from the taskbar) used to
+  start a second GUI, and the two fought over the one config file and the one running Server,
+  stranding the newer session. The GUI is now single-instance (a loopback-only lock on
+  `127.0.0.1:49732`); a second launch brings the running window to the front and exits. If
+  something unrelated holds that port, the app still launches normally rather than refusing to
+  open. Verified on **both Windows and Linux**, with the Server stopped and running.
+
+---
+
 ## [2.0.0] "Majordomo" — 2026-07-15
 
 The app grows from managing one Server to managing a fleet — several Servers on this
@@ -58,30 +97,6 @@ plain walkthrough of everyday use.
   engine is concurrently writing to the same World, and got dramatically worse than in testing
   (which only ever used small, freshly-generated Worlds). Now backgrounded like every other
   slow operation in the app.
-- **A running remote Server showed as "Stopped"** in the administrator until you pressed Start
-  locally. The host only pushes status-change events on start/stop, so a Server that had been
-  running for hours never announced itself to a late-joining admin, and selection fell back to a
-  cached flag that was always `False`. The running state is now seeded from the Machine's
-  reported server list on selection and re-confirmed from the authoritative `get_info().running`
-  — correct for local and remote alike. (Found during the first real LAN smoke test.)
-- **Sidebar heading** over the Machines tree said "This computer"; it now reads "Machines"
-  (the tree lists every Machine — the "This computer" node inside it is a separate thing).
-- **Double-launch now raises the existing window instead of starting a rival.** Opening the app
-  a second time (e.g. the desktop shortcut while one's already running from the taskbar) used to
-  spin up a second GUI; the two then fought over the one config file and the one tracked engine,
-  stranding the newer session. The GUI is now single-instance (a loopback-only lock on
-  `127.0.0.1:49732`): a second launch surfaces the running window and exits. If something
-  unrelated holds that port, the app still launches normally rather than refusing to open.
-  Applies on **both Windows and Linux** — verified on each, with the server stopped and running.
-- **Updates no longer drop settings that a new Bedrock Server Version introduces.** Update keeps
-  your `server.properties`, which meant any key Mojang added was silently lost — most painfully
-  `transport` in 1.26.5x: without it BDS falls back to RakNet, logs a *TRANSPORT TYPE ERROR*
-  ("not set to NetherNet"), and current clients can't connect. Update now merges in every key the
-  new stock `server.properties` has that yours lacks (with Mojang's comment block, logged in the
-  Activity Log); your existing values always win and obsolete keys are left alone. For a Server
-  already hit by this, the app spots the console error and offers (after a yes/no) to add
-  `transport=nethernet` — local or remote; restart the Server to apply. A deliberate
-  `transport=raknet` is respected.
 
 ### Deliberately out of scope
 - **Update stays local-only.** It wipes and replaces the entire Server install; running

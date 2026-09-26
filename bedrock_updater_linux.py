@@ -52,7 +52,12 @@ import time
 # ============================================================================
 
 APP_NAME = "Bedrock Server Manager"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
+# Release name, shown next to the version everywhere a user sees it (window
+# title, About, Machine page). The wire protocol / app_version fields keep the
+# plain APP_VERSION.
+APP_RELEASE_NAME = "NetherNet"
+APP_VERSION_LABEL = f'v{APP_VERSION} "{APP_RELEASE_NAME}"'
 APP_AUTHOR = "Tue Wincentz Boas - Built with Claude AI & Gemini 3"
 CONFIG_FILENAME = ".bedrock_updater_config.json"
 MINECRAFT_DOWNLOAD_PAGE = "https://www.minecraft.net/en-us/download/server/bedrock"
@@ -2113,7 +2118,7 @@ class BedrockUpdaterApp:
         self.root.bind("<F1>", lambda e: self.show_about())
     
     def setup_ui(self):
-        self.root.title(f"{APP_NAME} v{APP_VERSION}")
+        self.root.title(f"{APP_NAME} {APP_VERSION_LABEL}")
         self.root.geometry(self.config.get("window_geometry", "1200x700"))
         self.root.minsize(800, 600)
         self.set_window_icon()
@@ -2699,7 +2704,7 @@ class BedrockUpdaterApp:
         header = ttk.Frame(self.overview_frame)
         header.pack(fill=tk.X, pady=(0, 4))
         if kind == "local":
-            title, subtitle = "🖥 This computer", f"{APP_NAME} v{APP_VERSION}   |   platform: {sys.platform}"
+            title, subtitle = "🖥 This computer", f"{APP_NAME} {APP_VERSION_LABEL}   |   platform: {sys.platform}"
         else:
             machine = next((m for m in self.config.get("machines", []) if m["id"] == machine_id), None)
             st = self._remote_state.get(machine_id, {})
@@ -3730,7 +3735,7 @@ class BedrockUpdaterApp:
         ttk.Button(btn_frame, text="📂 Open Config File", command=self.open_config_file).pack(side=tk.RIGHT, padx=5)
         about_frame = ttk.LabelFrame(self.settings_tab, text="About", padding=10)
         about_frame.grid(row=4, column=0, sticky="ew", pady=5)
-        ttk.Label(about_frame, text=f"{APP_NAME} v{APP_VERSION}").pack(anchor="w")
+        ttk.Label(about_frame, text=f"{APP_NAME} {APP_VERSION_LABEL}").pack(anchor="w")
         ttk.Label(about_frame, text=APP_AUTHOR, foreground="gray").pack(anchor="w")
         ttk.Label(about_frame, text="A comprehensive tool for managing Minecraft Bedrock Dedicated Servers.", foreground="gray").pack(anchor="w", pady=(5, 0))
     
@@ -4922,7 +4927,7 @@ class BedrockUpdaterApp:
         messagebox.showinfo("Keyboard Shortcuts", "Ctrl+O  - Open server folder\nCtrl+S  - Create backup\nCtrl+U  - Start update\nF5      - Refresh/validate\nF1      - Show about\n\nServer Console:\nEnter   - Send command")
     
     def show_about(self):
-        messagebox.showinfo("About", f"{APP_NAME}\nVersion {APP_VERSION}\n\n{APP_AUTHOR}\n\nA comprehensive cross-platform tool for managing\nMinecraft Bedrock Dedicated Servers.")
+        messagebox.showinfo("About", f"{APP_NAME}\nVersion {APP_VERSION} \"{APP_RELEASE_NAME}\"\n\n{APP_AUTHOR}\n\nA comprehensive cross-platform tool for managing\nMinecraft Bedrock Dedicated Servers.")
 
 
 # ============================================================================
@@ -5075,7 +5080,7 @@ class AgentApp:
         self.host = RemoteAdminHost(self, port=port, log=self._log)
         token = self.remote_token()
         self.host.start()
-        self._log(f"{APP_NAME} v{APP_VERSION} agent running.")
+        self._log(f"{APP_NAME} {APP_VERSION_LABEL} agent running.")
         self._log(f"Machine: {socket.gethostname()}  ({len(self.config.get('server_profiles', {}))} Server(s) configured)")
         self._log(f"Pairing token: {token}")
         self._log("LAN only — do not port-forward. Ctrl-C to stop.")
@@ -5199,7 +5204,7 @@ def _ping_existing_instance() -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}")
+    parser = argparse.ArgumentParser(description=f"{APP_NAME} {APP_VERSION_LABEL}")
     parser.add_argument("--agent", action="store_true",
                         help="Run headless as a remote-administration host (no GUI).")
     parser.add_argument("--config", metavar="PATH", default=None,

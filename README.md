@@ -3,7 +3,7 @@
 A comprehensive cross-platform GUI application for managing Minecraft Bedrock Dedicated
 Servers — one, or a whole fleet across your home network.
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.0.1-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -23,6 +23,10 @@ Prefer to run from source? See **Quick Start** below. Build/release details are 
 
 New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyday use.
 
+> **New in 2.0.1 "NetherNet":** works with Bedrock Server Version **1.26.5x**, where NetherNet is the
+> only transport players can connect over. If players got a *transport error* after updating, this
+> release fixes it — see [`CHANGES.md`](CHANGES.md).
+
 ---
 
 ## ✨ Features
@@ -38,7 +42,10 @@ New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyda
 - **Multi-world management** — create, switch (dropdown), rename and delete Worlds; shows each World's *last run on* version so you know what it needs
 - **Player management** — allowlist (who may join), roles (visitor/member/operator), and **per-player game mode** so survival and creative players share one Server
 - **Gamerules** — one-sleeper night skip, keep inventory, mob griefing, daylight cycle and more, read from the World and applied live
-- **Safe updates** — automatic backup before every update, selective file preservation
+- **Safe updates** — automatic backup before every update, selective file preservation; your
+  `server.properties` is kept, and any new setting a Bedrock Server Version introduces (like
+  `transport=nethernet` in 1.26.5x) is merged in automatically
+- **One window** — launching the app again just brings the open window to the front
 - **Backup management** — per-Server backups (namespaced so Servers never mix): create, restore, auto-cleanup, optional compression
 - **Server configuration editor** — edit `server.properties` in the GUI, locally or on a paired remote Server
 - **Cross-platform** — Windows and Linux

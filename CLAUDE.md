@@ -12,7 +12,11 @@ code is genuinely cross-platform — every OS-specific operation branches on `sy
 "win32"`.
 
 All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py)
-(~4400 lines). The other files are a desktop launcher, packaging scripts, docs, and license.
+(~5200 lines). The other files are a desktop launcher, packaging scripts, docs, and license.
+The version shown to users is `APP_VERSION_LABEL` (`APP_VERSION` + `APP_RELEASE_NAME`, e.g.
+`v2.0.1 "NetherNet"`); the remote-admin wire protocol and `app_version` fields use the plain
+`APP_VERSION`. A release bump touches `APP_VERSION`/`APP_RELEASE_NAME`, the fallbacks in
+`packaging/` and `.github/workflows/release.yml`, the README badge, and CHANGES.md.
 The same file also runs headless as a remote-administration host: `python3
 bedrock_updater_linux.py --agent [--config PATH] [--port N]` — no tkinter import required
 (guarded behind `TK_AVAILABLE`).
@@ -134,7 +138,10 @@ The file is divided by `# ===` banner comments into these sections, top to botto
 
 2. **The update pipeline is destructive.** `perform_update()` does:
    backup preserved items → **delete the entire server folder contents** → extract the new ZIP →
-   restore preserved items from the just-made backup → optionally trim old backups. The
+   restore preserved items from the just-made backup → **merge in any `server.properties` keys
+   the new version's stock file has that the restored one lacks** (`merge_new_server_properties`
+   — user values win; without this, new Mojang settings such as `transport=nethernet` in 1.26.5x
+   are silently dropped and clients can't connect) → optionally trim old backups. The
    "preserve list" (the *What to back up* checkboxes on the **Backups** tab, defaults from
    `DEFAULT_PRESERVE_ITEMS`) is the only thing standing between an update and total data loss —
    `worlds` is flagged `critical`. A "fresh install" (no existing `server.properties`) skips
@@ -176,6 +183,10 @@ State is written back in `on_close()` and via each tab's Save button
 `tk.Variable`s, regardless of which tab they're gridded into).
 
 ## Gotchas
+
+- The GUI is **single-instance**: `main()` binds `127.0.0.1:49732` (`SINGLE_INSTANCE_PORT`); a
+  second launch pings the first to raise its window and exits. When testing, close the running
+  GUI first or your "new" launch will just surface the old one. `--agent` is not guarded.
 
 - [`bedrock-server-manager.desktop`](bedrock-server-manager.desktop) has **hardcoded paths**
   (`/home/boas/Bedrock/...`) — they're user-specific and must be edited per install.

@@ -113,6 +113,18 @@
 > running case the engine was completely untouched (same pid, still a child of the one GUI). This
 > is the behaviour that now holds on a fresh install of either platform.
 >
+> **v2.0.1 "NetherNet" (2026-09-26).** Updating the homelab to BDS **1.26.52.3** broke joining:
+> console "TRANSPORT TYPE ERROR … not set to NetherNet", clients got a transport error. 1.26.5x
+> ships `transport=nethernet` as the stock (and only supported) transport, but Update restored
+> the user's old `server.properties` wholesale, dropping the new key, so BDS fell back to RakNet.
+> Fix (`7ebad73`): `merge_new_server_properties()` merges every key from the new stock file into
+> the restored one after an update (user values win, obsolete keys kept), plus a console-triggered
+> yes/no offer to add `transport=nethernet` for Servers already hit (explicit `transport=raknet`
+> respected). Verified on the homelab: after the fix BDS listens on TCP 19132 (signalling) + UDP
+> 7551, "Signed in to signaling service", and the wife's client joined. Released together with the
+> other post-2.0.0 fixes (remote status, "Machines" heading, single-instance) as **v2.0.1
+> "NetherNet"**; the release name now shows in the GUI (`APP_RELEASE_NAME`).
+>
 > **Remaining known gaps (by design, not oversight):** remote-triggered *Update* is
 > permanently local-only (see Rationale in docs/GUI-DESIGN.md and CLAUDE.md — running the
 > destructive wipe/replace pipeline blind over a network link isn't a risk worth taking).
