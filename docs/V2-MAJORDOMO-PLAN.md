@@ -145,6 +145,9 @@
 > line**. The two can be released as **two separate products** from their respective branches
 > (1.x for users who find fleet management overkill; 2.0 for multi-machine setups) — no repo
 > split required for that.
+> **Superseded (2026-09-26):** the user kept 2.0 permanently, so the two-product plan was
+> dropped. `v2-majordomo` was merged into `main` at 2.0.0 and the branch has since been deleted;
+> `main` is the only line. The 1.x releases survive as tags (`v1.0.2`, `v1.0.3`).
 >
 > **To resume coding:** work on this branch, read this file + `CLAUDE.md` + the relevant
 > slices of `bedrock_updater_linux.py`, then implement **Stage 3 (Remote client)** — see Build
@@ -181,7 +184,7 @@ Decisions locked with the user (July 2026):
 - **One big release** — everything lands as **2.0.0**; nothing ships until the whole vision works. The laptop stays on 1.0.4 until 2.0 is verified.
 - **Home LAN only** — pairing-token + HMAC handshake; explicitly documented as not internet-facing (VPN is the answer if ever needed). No TLS of our own.
 - **Sidebar fleet tree** — left panel lists Machines → Servers with live status dots; selecting a Server shows the existing 7 tabs for it.
-- **Same repo, own branch** — `v2-majordomo`; `main` keeps the 1.x line; ship both as separate products if desired.
+- **Same repo, own branch** — `v2-majordomo`; `main` keeps the 1.x line; ship both as separate products if desired. *(Later superseded: merged into `main` at 2.0.0, branch deleted — `main` is the only line.)*
 
 Hard constraints carried over: single file, stdlib-only (socket/ssl/json/hmac/secrets are all
 stdlib), cross-platform via `sys.platform` branches, tkinter threading rule (workers marshal

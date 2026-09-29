@@ -17,6 +17,8 @@ The version shown to users is `APP_VERSION_LABEL` (`APP_VERSION` + `APP_RELEASE_
 `v2.0.1 "NetherNet"`); the remote-admin wire protocol and `app_version` fields use the plain
 `APP_VERSION`. A release bump touches `APP_VERSION`/`APP_RELEASE_NAME`, the fallbacks in
 `packaging/` and `.github/workflows/release.yml`, the README badge, and CHANGES.md.
+Versions are **two-part from 2.1 on** (2.1, 2.2, … — no patch digit, whatever the size of the
+release); `main` is the only branch, and releases are cut by pushing a `v*` tag.
 The same file also runs headless as a remote-administration host: `python3
 bedrock_updater_linux.py --agent [--config PATH] [--port N]` — no tkinter import required
 (guarded behind `TK_AVAILABLE`).
