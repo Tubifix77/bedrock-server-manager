@@ -183,6 +183,18 @@ and `add_server_profile()`, and to the sync in `_sync_flat_settings_into_active_
 State is written back in `on_close()` and via each tab's Save button
 (`save_settings()` is location-agnostic — it just reads whichever widgets currently hold its
 `tk.Variable`s, regardless of which tab they're gridded into).
+`save_config()` writes atomically (temp file + fsync + `os.replace`). An unreadable config is
+never silently overwritten: `load_config()` moves it aside as `*.corrupt-<timestamp>`, records
+the problem in `_CONFIG_LOAD_PROBLEMS`, and the GUI logs it and warns once at startup.
+
+**Logs** (for maintenance checks): one `session_<timestamp>.log` per GUI launch
+(`agent_<timestamp>.log` for `--agent`) in `get_log_dir()`. `BedrockUpdaterApp.log(msg, level)`
+maps `"error"`/`"warning"` to real log levels. Code outside the GUI class logs via the module
+logger `_LOG`. Uncaught exceptions in Tk callbacks (`report_callback_exception`) and threads
+(`threading.excepthook`) are logged with a traceback. The engine's console output is *not* in
+the log (only the on-screen console). A quick health check is
+`grep -h '\[ERROR\]\|\[WARNING\]' <logdir>/session_*.log`. Swallowed exceptions are fine for
+best-effort reads and socket cleanup; anything that hides a real failure should log via `_LOG`.
 
 ## Gotchas
 

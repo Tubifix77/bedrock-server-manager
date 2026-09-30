@@ -47,6 +47,11 @@ from typing import Optional, Dict, List, Tuple
 from collections import deque
 import time
 
+# Logger for code outside the GUI class (config I/O, ServerManager, the remote
+# layer). It writes wherever the GUI's setup_logging() or the agent's
+# run_agent() pointed the logging module -- the per-session log file.
+_LOG = logging.getLogger("bedrock_server_manager")
+
 # ============================================================================
 # CONFIGURATION & CONSTANTS
 # ============================================================================
@@ -252,6 +257,11 @@ def get_log_dir() -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
+# Problems load_config() hit, for the GUI to report once logging and the window
+# exist (load_config runs before either). The agent logs them as they happen.
+_CONFIG_LOAD_PROBLEMS: List[str] = []
+
+
 def load_config(config_path=None) -> dict:
     config_path = Path(config_path) if config_path else get_config_path()
     config = copy.deepcopy(DEFAULT_SETTINGS)
@@ -266,8 +276,26 @@ def load_config(config_path=None) -> dict:
                         config[key].update(value)
                     else:
                         config[key] = value
-    except Exception:
-        pass
+    except Exception as e:
+        # An unreadable config used to be silently replaced by defaults and then
+        # overwritten on the next save -- losing every Server profile, paired
+        # Machine and known player. Keep the damaged file for recovery instead.
+        raw_saved = None
+        config = copy.deepcopy(DEFAULT_SETTINGS)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        kept = config_path.with_name(f"{config_path.name}.corrupt-{stamp}")
+        n = 1
+        while kept.exists():  # never overwrite an earlier kept copy
+            kept = config_path.with_name(f"{config_path.name}.corrupt-{stamp}-{n}")
+            n += 1
+        try:
+            os.replace(config_path, kept)
+            where = f"The damaged file was kept as {kept}"
+        except OSError:
+            where = "The damaged file could not be moved aside"
+        msg = f"Settings file {config_path} could not be read ({e}); starting with default settings. {where}."
+        _CONFIG_LOAD_PROBLEMS.append(msg)
+        _LOG.error(msg)
     was_v1 = raw_saved is not None and raw_saved.get("config_version", 1) < 2
     if was_v1:
         config = migrate_config_to_v2(config)
@@ -277,15 +305,22 @@ def load_config(config_path=None) -> dict:
                 with open(bak_path, 'w') as f:
                     json.dump(raw_saved, f, indent=2)
         except Exception:
-            pass
+            _LOG.exception("Could not write the pre-2.0 config backup")
     return hydrate_active_profile_cache(config)
 
 def save_config(config: dict):
+    # Write to a temp file and swap it in, so a crash or power cut mid-save
+    # can't leave a half-written settings file behind.
+    path = get_config_path()
+    tmp = path.with_name(path.name + ".tmp")
     try:
-        with open(get_config_path(), 'w') as f:
+        with open(tmp, 'w') as f:
             json.dump(config, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
     except Exception:
-        pass
+        _LOG.exception("Could not save settings to %s", path)
 
 def get_downloads_folder() -> str:
     """Get the user's Downloads folder - cross-platform compatible."""
@@ -784,7 +819,7 @@ class BackupManager:
                         backup["path"].unlink()
                     deleted += 1
                 except Exception:
-                    pass
+                    _LOG.exception("Could not delete old backup %s", backup["path"])
 
         return deleted
 
@@ -810,7 +845,8 @@ class ServerManager:
         self.status_callbacks = []
         self._running = False
         self._output_thread = None
-    
+        self._failed_callbacks = set()  # ids of callbacks already logged as broken
+
     def add_output_callback(self, callback):
         self.output_callbacks.append(callback)
     
@@ -822,14 +858,21 @@ class ServerManager:
             try:
                 cb(line)
             except Exception:
-                pass
-    
+                self._log_callback_failure(cb)
+
     def _notify_status(self, status: str):
         for cb in self.status_callbacks:
             try:
                 cb(status)
             except Exception:
-                pass
+                self._log_callback_failure(cb)
+
+    def _log_callback_failure(self, cb):
+        # Output callbacks fire once per console line, so log each broken
+        # callback once instead of flooding the log with the same traceback.
+        if id(cb) not in self._failed_callbacks:
+            self._failed_callbacks.add(id(cb))
+            _LOG.exception("Server console callback failed (logged once per callback)")
     
     def is_running(self) -> bool:
         if self.process is None:
@@ -912,7 +955,9 @@ class ServerManager:
                 elif self.process.poll() is not None:
                     break
         except Exception:
-            pass
+            # The console reader dying makes the GUI show the Server as stopped
+            # even if the engine is still up -- record why.
+            _LOG.exception("Server console reader stopped unexpectedly")
         finally:
             self._running = False
             self._notify_status("stopped")
@@ -1860,13 +1905,13 @@ class MachineConnection:
             try:
                 self._on_event(msg)
             except Exception:
-                pass
+                _LOG.exception("Remote event handler failed")
 
     def _notify_state(self, connected: bool, detail: str):
         try:
             self._on_state(connected, detail)
         except Exception:
-            pass
+            _LOG.exception("Remote connection-state handler failed")
 
 
 class RemoteServerAccess:
@@ -2024,11 +2069,16 @@ class BedrockUpdaterApp:
         self.active_remote = None
 
         self.setup_logging()
+        for problem in _CONFIG_LOAD_PROBLEMS:
+            self.logger.error(problem)  # load_config ran before logging existed
         self.setup_styles()
         self.setup_ui()
         self.apply_theme()
         self.load_saved_state()
         self.setup_keyboard_shortcuts()
+        if _CONFIG_LOAD_PROBLEMS:
+            self.root.after(300, lambda: messagebox.showwarning(
+                "Settings could not be read", "\n\n".join(_CONFIG_LOAD_PROBLEMS)))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -2058,19 +2108,22 @@ class BedrockUpdaterApp:
             handlers=[logging.FileHandler(log_file, encoding='utf-8')]
         )
         self.logger = logging.getLogger(__name__)
-        
-    def log(self, message: str, level: str = "info"):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        formatted_msg = f"[{timestamp}] {message}"
-        print(formatted_msg)
-        if level == "error":
-            self.logger.error(message)
-        elif level == "success":
-            self.logger.info(f"SUCCESS: {message}")
-        else:
-            self.logger.info(message)
-        if hasattr(self, 'status_label'):
-            self.status_label.config(text=message)
+        # Uncaught exceptions in button handlers and worker threads used to go
+        # only to stderr -- lost when the app is started from a desktop icon.
+        self.root.report_callback_exception = self._log_callback_exception
+        threading.excepthook = self._log_thread_exception
+
+    def _log_callback_exception(self, exc_type, exc, tb):
+        self.logger.error("Unhandled error in the GUI", exc_info=(exc_type, exc, tb))
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def _log_thread_exception(self, args):
+        if args.exc_type is SystemExit:
+            return
+        name = args.thread.name if args.thread else "?"
+        self.logger.error("Unhandled error in thread %s", name,
+                          exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+        threading.__excepthook__(args)
             
     def setup_styles(self):
         self.style = ttk.Style()
@@ -2439,15 +2492,17 @@ class BedrockUpdaterApp:
             while True:
                 item = self._remote_queue.get_nowait()
                 kind = item[0]
-                if kind == "event":
-                    self._on_remote_event(item[1], item[2])
-                elif kind == "state":
-                    self._on_remote_state(item[1], item[2], item[3])
-                elif kind == "log":
-                    self.log(item[2], "info")
+                # Per item, so one failing event can't hold up the rest.
+                try:
+                    if kind == "event":
+                        self._on_remote_event(item[1], item[2])
+                    elif kind == "state":
+                        self._on_remote_state(item[1], item[2], item[3])
+                    elif kind == "log":
+                        self.log(item[2], "info")
+                except Exception:
+                    self.logger.exception("Could not apply remote %s update", kind)
         except queue.Empty:
-            pass
-        except Exception:
             pass
         finally:
             self.root.after(150, self._drain_remote_queue)
@@ -3765,7 +3820,12 @@ class BedrockUpdaterApp:
         if lines > max_lines:
             self.log_text.delete('1.0', f'{lines - max_lines}.0')
         self.log_text.config(state=tk.DISABLED)
-        self.logger.info(message)
+        if level == "error":
+            self.logger.error(message)
+        elif level == "warning":
+            self.logger.warning(message)
+        else:  # "info" / "success" -- the tag only colours the Activity Log
+            self.logger.info(message)
     
     def console_log(self, message: str):
         self.console_text.config(state=tk.NORMAL)

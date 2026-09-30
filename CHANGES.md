@@ -4,6 +4,27 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — next release: 2.1
+
+### Fixed
+- **Settings can no longer be lost to a crash or power cut.** The settings file was overwritten
+  in place, so an interrupted save could leave it half-written. On the next start the app would
+  then silently fall back to defaults and overwrite it, losing every Server profile, paired Machine
+  and known player. Saves now go through a temp file that is swapped in atomically. If the file is
+  ever unreadable anyway, it is kept as `…config.json.corrupt-<timestamp>` and the app says so at
+  startup instead of quietly starting empty.
+- **The log recorded every message as INFO**, errors included, because the main window had two
+  `log()` methods and the one that won ignored the level. Errors and warnings are now logged as
+  such.
+- **Crashes inside the app are now written to the session log** with a traceback. Before, an
+  unhandled error in a button handler or background thread went only to the terminal, so it was
+  lost whenever the app was started from its icon.
+- A few failures that were swallowed without a trace are now logged (with no change in behavior):
+  the Server's console reader stopping, an old backup that couldn't be deleted, and remote-update
+  handlers failing. A broken console callback is logged once, not once per console line.
+
+---
+
 ## [2.0.1] "NetherNet" — 2026-09-26
 
 Keeps the manager working with **Bedrock Server Version 1.26.5x**, where Mojang made NetherNet
