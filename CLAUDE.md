@@ -138,6 +138,11 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   that renders `server.properties` as editable key/value rows (skips `level-name`, owned by the
   Active World dropdown on Server) via `self.app.active_access`. Tracks a load/save snapshot
   (`has_unsaved_changes()`) so switching Servers can warn before discarding edits.
+  `OPTIONAL_CHECKBOXES` puts settings Bedrock knows but its stock file omits (or only comments
+  out) as checkboxes at the top — key → (text, value when absent, tooltip); one still absent and
+  at that value is never written. Add a hidden setting there, not as a special case. To find
+  candidates for a new Bedrock Server Version: diff the kebab-case strings in the engine binary
+  near the stock keys against the stock `server.properties`.
 - **World versions** — `get_world_last_opened_version()` reads the `lastOpenedWithVersion`
   NBT tag straight out of a world's binary `level.dat` (little-endian byte scan, no NBT lib);
   a World won't load on a Bedrock Server Version older than that stamp.
@@ -218,6 +223,9 @@ best-effort reads and socket cleanup; anything that hides a real failure should 
 
 ## Gotchas
 
+- **Tooltips** (`create_tooltip`) are one-at-a-time, with the auto-hide timer on `self.root` and
+  closed on the widget's `<ButtonPress>`/`<Destroy>`: widgets that get rebuilt (the Server
+  strip, on every status change) otherwise orphan a visible tooltip window. Keep it that way.
 - The GUI is **single-instance**: `main()` binds `127.0.0.1:49732` (`SINGLE_INSTANCE_PORT`); a
   second launch pings the first to raise its window and exits. When testing, close the running
   GUI first or your "new" launch will just surface the old one. `--agent` is not guarded.

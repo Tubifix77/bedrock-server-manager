@@ -51,7 +51,8 @@ New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyda
   `transport=nethernet` in 1.26.5x) is merged in automatically
 - **One window** — launching the app again just brings the open window to the front
 - **Backup management** — per-Server backups (namespaced so Servers never mix): create, restore, auto-cleanup, optional compression
-- **Server configuration editor** — edit `server.properties` in the GUI, locally or on a paired remote Server
+- **Server configuration editor** — edit `server.properties` in the GUI, locally or on a paired remote Server,
+  plus checkboxes for settings Mojang's file leaves out (telemetry, Vibrant Visuals, chat log)
 - **Cross-platform** — Windows and Linux
 
 ---
