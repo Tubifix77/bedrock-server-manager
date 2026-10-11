@@ -4680,19 +4680,36 @@ class BedrockUpdaterApp:
         ttk.Label(about_frame, text="A comprehensive tool for managing Minecraft Bedrock Dedicated Servers.", foreground="gray").pack(anchor="w", pady=(5, 0))
     
     def create_tooltip(self, widget, text):
+        # One tooltip at a time, app-wide, and its 2-second timer lives on the
+        # root window: the Server strip rebuilds its buttons on every status
+        # change, and a tooltip whose button vanished under the mouse got
+        # neither its <Leave> nor its widget-owned timer -- it stayed on screen.
         def show_tooltip(event):
-            tooltip = tk.Toplevel()
+            self._hide_tooltip()
+            tooltip = tk.Toplevel(self.root)
             tooltip.wm_overrideredirect(True)
             tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
             label = ttk.Label(tooltip, text=text, background="#ffffe0", relief="solid", borderwidth=1, padding=3)
             label.pack()
-            widget._tooltip = tooltip
-            widget.after(2000, lambda: tooltip.destroy() if tooltip.winfo_exists() else None)
-        def hide_tooltip(event):
-            if hasattr(widget, '_tooltip') and widget._tooltip:
-                widget._tooltip.destroy()
-        widget.bind("<Enter>", show_tooltip)
-        widget.bind("<Leave>", hide_tooltip)
+            self._tooltip = tooltip
+            self._tooltip_timer = self.root.after(2000, self._hide_tooltip)
+        widget.bind("<Enter>", show_tooltip, add="+")
+        for seq in ("<Leave>", "<ButtonPress>", "<Destroy>"):
+            widget.bind(seq, lambda e: self._hide_tooltip(), add="+")
+
+    def _hide_tooltip(self):
+        timer, self._tooltip_timer = getattr(self, "_tooltip_timer", None), None
+        if timer:
+            try:
+                self.root.after_cancel(timer)
+            except tk.TclError:
+                pass
+        tooltip, self._tooltip = getattr(self, "_tooltip", None), None
+        if tooltip is not None:
+            try:
+                tooltip.destroy()
+            except tk.TclError:
+                pass
     
     def log(self, message: str, level: str = "info"):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -6146,12 +6163,43 @@ class BedrockUpdaterApp:
 _TkFrameBase = ttk.Frame if TK_AVAILABLE else object
 
 
+class _CheckValue:
+    """A Checkbutton's BooleanVar seen as a properties value ("true"/"false"),
+    so a checkbox row fits the editor's key -> .get() map like an Entry."""
+    def __init__(self, var):
+        self.var = var
+
+    def get(self) -> str:
+        return "true" if self.var.get() else "false"
+
+
 class ServerPropertiesEditor(_TkFrameBase):
+    # Settings Bedrock understands but its stock server.properties doesn't list
+    # (or only lists commented out), shown as checkboxes at the top:
+    # key -> (checkbox text, value when absent, tooltip). One that isn't in the
+    # file and still has its absent value is never written, so the file stays
+    # as Mojang ships it unless the user actually changes the setting.
+    OPTIONAL_CHECKBOXES = {
+        "emit-server-telemetry": ("Send server telemetry to Mojang", "false",
+                                  "Anonymous gameplay statistics for Mojang. Off unless this is ticked."),
+        # Default true per Microsoft's BDS reference: a dedicated server tells
+        # clients to fall back from Vibrant Visuals unless this is set to false.
+        "disable-client-vibrant-visuals": ("Turn off Vibrant Visuals for players", "true",
+                                           "Untick to let players' devices use Vibrant Visuals,\n"
+                                           "Minecraft's new graphics mode (on devices that support it)."),
+        # Documented only for Minecraft Education; the vanilla engine has the
+        # same chat-log code, but it hasn't been verified with real player chat.
+        "chat-logging-enabled": ("Save players' chat to a log file (experimental)", "false",
+                                 "Writes chat messages to chat_logs/ChatLog_<date>.txt in the Server's folder.\n"
+                                 "Experimental: documented by Mojang only for Minecraft Education servers."),
+    }
+
     def __init__(self, parent, app):
         super().__init__(parent, padding=10)
         self.app = app
         self.entries = {}
         self._loaded_snapshot = {}
+        self._absent_optional = set()
         self.setup_ui()
 
     def has_unsaved_changes(self) -> bool:
@@ -6194,8 +6242,17 @@ class ServerPropertiesEditor(_TkFrameBase):
             self._loaded_snapshot = {}
             return
         row_index = 0
+        self._absent_optional = {k for k in self.OPTIONAL_CHECKBOXES if k not in props}
+        for key, (text, default, tip) in self.OPTIONAL_CHECKBOXES.items():
+            var = tk.BooleanVar(value=props.get(key, default).strip().lower() == "true")
+            ttk.Label(self.scrollable_frame, text=key).grid(row=row_index, column=0, sticky="e", padx=5, pady=2)
+            box = ttk.Checkbutton(self.scrollable_frame, text=text, variable=var)
+            box.grid(row=row_index, column=1, sticky="w", padx=5, pady=2)
+            self.app.create_tooltip(box, tip)
+            self.entries[key] = _CheckValue(var)
+            row_index += 1
         for key, value in props.items():
-            if key.lower() == "level-name":
+            if key.lower() == "level-name" or key in self.OPTIONAL_CHECKBOXES:
                 continue
             ttk.Label(self.scrollable_frame, text=key).grid(row=row_index, column=0, sticky="e", padx=5, pady=2)
             entry = ttk.Entry(self.scrollable_frame, width=40)
@@ -6214,13 +6271,16 @@ class ServerPropertiesEditor(_TkFrameBase):
             messagebox.showerror("Error", "No Server selected!")
             return
         new_props = {key: entry.get() for key, entry in self.entries.items()}
+        to_write = {k: v for k, v in new_props.items()
+                    if not (k in self._absent_optional and v == self.OPTIONAL_CHECKBOXES[k][1])}
         try:
-            success = acc.write_properties(new_props)
+            success = acc.write_properties(to_write)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save properties:\n{e}")
             return
         if success:
             self._loaded_snapshot = dict(new_props)
+            self._absent_optional -= set(to_write)
             self.app.log("Server properties saved successfully.", "success")
             messagebox.showinfo("Success", "Properties saved!")
         else:

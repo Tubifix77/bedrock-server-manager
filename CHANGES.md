@@ -4,6 +4,31 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — next release: 3.1
+
+### Added
+- **Checkboxes for hidden settings in 📝 Configuration.** Three settings Bedrock understands, but
+  that its stock `server.properties` doesn't list (or only lists as a comment), are now checkboxes
+  at the top of the page. A setting left as it was isn't written, so the file stays as Mojang
+  ships it. Each takes effect on the next start.
+  - **Send server telemetry to Mojang** (`emit-server-telemetry`, off by default). Bedrock prints
+    its "Telemetry is currently not enabled" message at every start while it's off;
+    `=false` doesn't silence it.
+  - **Turn off Vibrant Visuals for players** (`disable-client-vibrant-visuals`, on by default per
+    Microsoft's reference). Untick it to let players' devices use Vibrant Visuals.
+  - **Save players' chat to a log file (experimental)** (`chat-logging-enabled`, off by default):
+    `chat_logs/ChatLog_<date>.txt`. Mojang documents it only for Minecraft Education servers; the
+    vanilla engine has the same code, but it hasn't been verified with real player chat yet.
+
+### Fixed
+- **Yellow hover tips could get stuck on screen**, most often over the Server 1 / Server 2
+  buttons. The top line rebuilds its buttons whenever a Server starts or stops; a tip showing at
+  that moment lost both its "mouse left" event and its 2-second timer, and repeated hovering
+  could pile several up. Now only one tip exists at a time, its timer belongs to the main
+  window, and it closes when its button is clicked or rebuilt.
+
+---
+
 ## [3.0] "Servers" — 2026-10-11
 
 Several completely separate Servers on one Machine (say, survival for the grown-ups and
