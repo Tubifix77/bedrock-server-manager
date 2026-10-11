@@ -5,7 +5,7 @@
 # Usage:  packaging/linux/build-appimage.sh [version]
 set -euo pipefail
 
-VERSION="${1:-2.0.1}"
+VERSION="${1:-3.0}"
 APP=BedrockServerManager
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"

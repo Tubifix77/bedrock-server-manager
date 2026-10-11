@@ -14,14 +14,15 @@ thing Update swaps out, distinct from your Worlds, which survive an update untou
 
 ## First run
 
-1. Launch the app. On Server tab, if nothing is configured yet, the info panel points you to
-   **⚙️ Settings** to set your Server's folder — the folder containing `bedrock_server`
-   (or `bedrock_server.exe` on Windows) and `server.properties`. If you don't have a Bedrock
-   Dedicated Server yet, grab one from the official Minecraft site and unzip it somewhere first.
-2. Once a folder is set, head to **🌍 Worlds** and use **✨ Create New World** — this is where
-   new installs land, since a fresh Bedrock install has no World yet.
-3. Back on **🎮 Server**, hit **▶ Start**. The console at the bottom shows the engine's own
-   output live.
+1. Launch the app and press **+** at the top right. Give the Server a name (what players see),
+   pick a game mode, and — if you like — type a **seed** for the World. The app downloads the
+   newest Bedrock Dedicated Server itself and installs it; there's nothing to find or unzip.
+   *(Already have a Bedrock server folder? In the same window, choose **Use an existing Bedrock
+   folder instead…**.)*
+2. You land on **📝 Configuration** to look over the settings (difficulty, max players, …).
+3. On **🎮 Server**, hit **▶ Start**. The World is generated on this first start. The console at
+   the bottom shows the engine's own output live. On Windows, allow `bedrock_server.exe` when
+   the firewall asks, or players can't connect.
 
 That's the whole loop for a single Server: Server tab to run it, Worlds/Players/Configuration/
 Backups to manage it, Update when a new Bedrock Server Version comes out.
@@ -33,12 +34,12 @@ Backups to manage it, Update when a new Bedrock Server Version comes out.
 | Tab | What you do there |
 |---|---|
 | 🎮 **Server** | The home screen: what's running, Start/Stop/Restart, the Active World dropdown, **🎲 Gamerules**, and the live console (type commands at the bottom, or use the Quick buttons). |
-| 🌍 **Worlds** | Create, rename, delete Worlds; see each one's size and which Bedrock Server Version it last ran on (a World won't load on an older engine than that). Switch the Active World here. |
+| 🌍 **Worlds** | Create (name + optional seed), rename, delete Worlds; see each one's size and which Bedrock Server Version it last ran on (a World won't load on an older engine than that). Switch the Active World here. |
 | 👥 **Players** | Allowlist (who's allowed to join), roles (visitor/member/operator), and per-player game mode (mix survival and creative players on one Server). Names are learned automatically as people join. |
 | 📝 **Configuration** | The full `server.properties` editor — everything except `level-name`, which lives on the Active World dropdown instead. |
 | 💾 **Backups** | What gets backed up (the preserve checklist), your backup policy (how many to keep, compress or not), and the backup list itself with restore/delete. |
-| 🔄 **Update** | Swap the Bedrock Server Version: paste the new version's ZIP path, hit Update. Backs up your preserved items first, always. **Local machines only** — see below. |
-| ⚙️ **Settings** | App-level preferences, Remote Administration, and this Server's folder (to relocate it — adding a *new* Server is the sidebar's ➕ Server, not this). |
+| 🔄 **Update** | Shows `Installed: … · Latest: …` and one button — **⬆ Update to …** or **✓ Up to date**. With several Servers, **Update all Servers** does them all in one go. Backs up your preserved items first, always. **Local machines only** — see below. |
+| ⚙️ **Settings** | App-level preferences, Remote Administration, and this Server's folder (to relocate it — adding a *new* Server is **+** at the top right, not this). |
 
 **A tip that saves confusion:** a running Server greys out anything that would require
 restarting it (like the Active World dropdown) — stop it first, or use the app's own
@@ -48,17 +49,28 @@ confirm-and-restart flows where offered.
 
 ## Managing more than one Server (optional)
 
-If you only ever run one Server, you can ignore this whole section — the app opens with the
-sidebar hidden, looking just like the simple single-Server layout.
+Say the grown-ups play survival and the kids creative: make them two Servers. Each one is
+completely separate — its own Worlds, settings, allowed players and backups — and they can run
+at the same time.
 
-Click **▶ Machines** (top-left, always there) to reveal it:
+- The top line lists them: **Server 1: \<Active World\>**, **Server 2: …** (🟢 = running). Click
+  one to work on it; the tabs below follow. If they don't all fit, the rest are under
+  **▾ N more**.
+- **+** makes a new Server (see *First run*). You can start it from a new World (with an
+  optional seed) or from a copy of an existing World.
+- **Only the first Server shows up in Minecraft's LAN list.** That's a Bedrock limit: one per
+  computer. Players add the others under **Servers → Add Server** with this computer's address
+  and the port the app shows when the Server is created (19134, 19136, …).
+- **−** removes a Server **for good**: choose which one, check the list of what will be deleted
+  (its folder, its Worlds, its backups), and type the World's name to confirm. A Server with
+  players on it can't be chosen. The numbers close up afterwards — remove Server 2, and Server 3
+  becomes Server 2.
+- **🔄 Update ▸ Update all Servers** updates every Server in one go: running ones are stopped
+  and started again, and if one fails the others still get done.
 
-- **➕ Server** adds another, independent local Server (its own folder, settings, backups).
-  Several can run at once, on different ports — the app refuses to start two Servers on the
-  same port so they can't collide.
-- **🌐 Fleet (All Servers)** shows every Server across every Machine in one table — a
-  bird's-eye view, with Start/Stop right there.
-- Click **◀ Hide** to put the sidebar away again.
+For a bird's-eye view, click **▶ Machines** (top-left) to open the sidebar:
+**🌐 Fleet (All Servers)** shows every Server across every Machine in one table, with
+Start/Stop right there. Click **◀ Hide** to put it away again.
 
 ## Administering another computer's Servers (optional, LAN only)
 
@@ -67,7 +79,7 @@ using the exact same tabs as a local Server.
 
 1. On the computer that will **host** the Servers: **⚙️ Settings ▸ Remote Administration**,
    enable it, note the port and the pairing token.
-2. On the computer that will **administer**: sidebar's **➕ Machine**, enter that computer's
+2. On the computer that will **administer**: **▶ Machines**, then the sidebar's **➕ Machine**, enter that computer's
    address, port, and token, then Test Connection.
 3. Its Servers now appear in your sidebar under that Machine's name, driven identically to a
    local Server — console, start/stop, worlds, players, configuration, backups.
@@ -100,6 +112,8 @@ mid-copy. Walk over to (or remote-desktop into) the machine itself to run an upd
   mid-update, your last backup is sitting in the Backups tab.
 - A fresh install (no `server.properties` yet) skips the backup/wipe steps entirely — there's
   nothing to lose yet.
+- **About seeds:** a seed decides the landscape of a *new* World — the same seed gives the same
+  World. It can't change a World that already exists. Leave it empty for a random one.
 
 ---
 

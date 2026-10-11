@@ -57,11 +57,11 @@ _LOG = logging.getLogger("bedrock_server_manager")
 # ============================================================================
 
 APP_NAME = "Bedrock Server Manager"
-APP_VERSION = "2.0.1"
+APP_VERSION = "3.0"
 # Release name, shown next to the version everywhere a user sees it (window
 # title, About, Machine page). The wire protocol / app_version fields keep the
 # plain APP_VERSION.
-APP_RELEASE_NAME = "NetherNet"
+APP_RELEASE_NAME = "Servers"
 APP_VERSION_LABEL = f'v{APP_VERSION} "{APP_RELEASE_NAME}"'
 APP_AUTHOR = "Tue Wincentz Boas - Built with Claude AI & Gemini 3"
 CONFIG_FILENAME = ".bedrock_updater_config.json"
@@ -226,6 +226,9 @@ COMMON_GAMERULES = {
 PLAYER_XUID_RE = re.compile(
     r"Player\s+(?:connected|disconnected|spawned)\s*:\s*(.+?)\s*,?\s*xuid:\s*(\d+)",
     re.IGNORECASE)
+# Who's online right now, from the same console lines. (Network-level checks
+# can't count NetherNet players -- they don't show up as separate connections.)
+PLAYER_JOIN_LEAVE_RE = re.compile(r"Player\s+(connected|disconnected)\s*:\s*(.+?)\s*,\s*xuid:", re.IGNORECASE)
 
 SERVER_SIGNATURE_FILES = ["bedrock_server.exe", "bedrock_server", "server.properties"]
 SERVER_EXECUTABLE = "bedrock_server.exe" if sys.platform == "win32" else "bedrock_server"
@@ -409,8 +412,291 @@ def is_valid_bedrock_zip(zip_path: str) -> Tuple[bool, str]:
         return False, f"Error: {str(e)}"
     return False, "Not a Bedrock server ZIP"
 
+# --- Bedrock Server Version: latest release, download, installed version ---
+# Mojang's download-links endpoint (undocumented but widely relied on -- Docker
+# images, the Arch package) lists the current release ZIP per platform plus
+# previews. A browser-style User-Agent is needed: the CDN rejects script ones.
+BEDROCK_LINKS_API = "https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
+HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+# Written into a Server folder by the app after it installs or updates it, and
+# refreshed from the engine's own "Version: x" startup line. Mojang's files no
+# longer carry the version, which is why the app used to show "Unknown".
+VERSION_MARKER = ".bsm_bedrock_version"
+_ZIP_VERSION_RE = re.compile(r"bedrock-server-(\d+(?:\.\d+)+)\.zip$", re.IGNORECASE)
+_CONSOLE_VERSION_RE = re.compile(r"\]\s*Version:\s*(\d+(?:\.\d+)+)\s*$")
+
+
+def fetch_latest_bedrock_release(timeout: float = 15) -> Dict[str, str]:
+    """The current *release* (never a preview) Bedrock Server Version for this
+    platform, as {"version": "1.26.52.3", "url": ".../bedrock-server-1.26.52.3.zip"}.
+    Raises on any network or format problem -- callers fall back to manual entry."""
+    kind = "serverBedrockWindows" if sys.platform == "win32" else "serverBedrockLinux"
+    req = urllib.request.Request(BEDROCK_LINKS_API, headers={"User-Agent": HTTP_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.load(resp)
+    for link in data["result"]["links"]:
+        if link.get("downloadType") == kind:
+            url = link["downloadUrl"]
+            m = _ZIP_VERSION_RE.search(url)
+            if not m:
+                raise ValueError(f"Unexpected download URL: {url}")
+            return {"version": m.group(1), "url": url}
+    raise ValueError(f"No {kind} entry in Mojang's download list")
+
+
+def version_from_zip_name(name: str) -> Optional[str]:
+    m = _ZIP_VERSION_RE.search(str(name))
+    return m.group(1) if m else None
+
+
+def download_bedrock_zip(url: str, dest_dir: Path, progress_callback=None) -> Path:
+    """Download a Bedrock server ZIP into dest_dir and return its path. An
+    already-present valid copy of the same file is reused. Downloads go to a
+    .part file that is renamed only when complete, so a broken download never
+    looks like a valid ZIP."""
+    dest_dir = Path(dest_dir)
+    target = dest_dir / url.rsplit("/", 1)[-1]
+    if target.exists() and is_valid_bedrock_zip(str(target))[0]:
+        if progress_callback:
+            progress_callback(100.0)
+        return target
+    part = target.with_name(target.name + ".part")
+    req = urllib.request.Request(url, headers={"User-Agent": HTTP_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as out:
+        total = int(resp.info().get("Content-Length", 0) or 0)
+        done = 0
+        while True:
+            chunk = resp.read(1 << 16)
+            if not chunk:
+                break
+            out.write(chunk)
+            done += len(chunk)
+            if progress_callback and total:
+                progress_callback(done / total * 100)
+    ok, msg = is_valid_bedrock_zip(str(part))
+    if not ok:
+        part.unlink(missing_ok=True)
+        raise ValueError(f"Downloaded file is not a Bedrock server ZIP ({msg})")
+    os.replace(part, target)
+    return target
+
+
+def record_installed_version(server_path: Path, version: str):
+    try:
+        (Path(server_path) / VERSION_MARKER).write_text(version.strip() + "\n")
+    except OSError:
+        _LOG.exception("Could not record the installed Bedrock Server Version in %s", server_path)
+
+
+# --- Creating a new Server (3.0 "+", docs/V3-SERVERS-PLAN.md §2) -------------
+NEW_SERVER_FIRST_PORT = 19134  # 19132/19133 are Bedrock's defaults, kept for Server 1
+
+
+def _port_in_use(port: int) -> bool:
+    """Something on this machine already accepts on TCP `port` (a NetherNet
+    Server listens on TCP server-port). A connect test, not a bind, so Windows
+    Firewall never prompts for the app itself."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def find_free_server_port(used_ports: set, start: int = NEW_SERVER_FIRST_PORT) -> int:
+    """First port p (stepping by 2, so p+1 stays free for server-portv6) that no
+    configured Server uses and nothing on this machine is listening on."""
+    p = start
+    while p < 65000:
+        if p not in used_ports and p + 1 not in used_ports and not _port_in_use(p):
+            return p
+        p += 2
+    raise RuntimeError("No free port found for a new Server")
+
+
+def create_server_folder(zip_path, target: Path, *, server_name: str, gamemode: str, port: int,
+                         lan_visible: bool, world_name: Optional[str] = None,
+                         copy_world_from: Optional[Path] = None, version: Optional[str] = None,
+                         seed: str = ""):
+    """Install a fresh, completely separate Server into `target` (which must not
+    exist yet) from a Bedrock ZIP, then set it up: name, gamemode, World (new, or
+    a copy of an existing one; `seed` shapes a new one), its own port, LAN
+    visibility, allowlist off.
+    No tkinter; raises on any problem (the caller deletes the half-made folder)."""
+    target = Path(target)
+    os.makedirs(_long_path(target))  # fails if it already exists -- never reuse a folder
+    with zipfile.ZipFile(_long_path(zip_path)) as zf:
+        zf.extractall(_long_path(target))
+    make_executable(target / SERVER_EXECUTABLE)
+    level = world_name or server_name
+    if copy_world_from:
+        # The copy takes the new Server's name, so the strip doesn't show two
+        # Servers with the same World name.
+        shutil.copytree(_long_path(Path(copy_world_from)), _long_path(target / "worlds" / level))
+    save_server_properties(target / "server.properties", {
+        "server-name": server_name,
+        "gamemode": gamemode,
+        "level-name": level,
+        "server-port": str(port),
+        "server-portv6": str(port + 1),
+        # Only one Server per machine can be LAN-discoverable (UDP 7551 goes to
+        # whichever starts first), so it's made deterministic: see §7 of the plan.
+        "enable-lan-visibility": "true" if lan_visible else "false",
+        # Stock 1.26.5x ships allow-list=true with an empty list: nobody could join.
+        "allow-list": "false",
+        # Only used when Bedrock generates the World on the first start; always
+        # written so a copied World never inherits a stale stock value.
+        "level-seed": "" if copy_world_from else seed.strip(),
+    })
+    if version:
+        record_installed_version(target, version)
+
+
+def _rmtree_report(path: Path) -> List[str]:
+    """Delete a folder tree; read-only files (common on Windows) are made
+    writable and retried. Returns what couldn't be removed, instead of stopping
+    halfway with an exception."""
+    failed: List[str] = []
+
+    def retry(func, p, _exc):
+        try:
+            os.chmod(p, 0o700)
+            func(p)
+        except OSError:
+            failed.append(str(p).replace("\\\\?\\", ""))
+    if Path(path).exists():
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(_long_path(path), onexc=retry)
+        else:
+            shutil.rmtree(_long_path(path), onerror=retry)
+    return failed
+
+
+def server_backup_dir(server_path: Path) -> Path:
+    """This Server's own backups (see BackupManager) -- not the older shared
+    <parent>/bedrock_backups/backup_* entries kept for rolling back to 1.0.4."""
+    server_path = Path(server_path)
+    return server_path.parent / "bedrock_backups" / server_path.name
+
+
+def delete_server_files(server_path: Path) -> List[str]:
+    """Permanently delete a Server's folder and its own backups (3.0 "−").
+    Refuses anything that isn't a Bedrock server folder, so a profile pointing at
+    the wrong place can never wipe it. Returns paths that couldn't be removed."""
+    server_path = Path(server_path).resolve()
+    # Stricter than is_valid_bedrock_server (which accepts any one signature
+    # file): deleting needs an engine binary AND server.properties, and never a
+    # drive root or a home folder.
+    has_engine = (server_path / "bedrock_server").is_file() or (server_path / "bedrock_server.exe").is_file()
+    risky = server_path == Path(server_path.anchor) or server_path == Path.home().resolve()
+    if risky or not has_engine or not (server_path / "server.properties").is_file():
+        raise ValueError(f"{server_path} doesn't look like a Bedrock server folder; nothing was deleted")
+    failed = _rmtree_report(server_path)
+    failed += _rmtree_report(server_backup_dir(server_path))
+    return failed
+
+
+class UpdateError(Exception):
+    """An update that failed. files_changed tells whether the Server's folder
+    had already been wiped (False = it's still intact and can be started)."""
+    def __init__(self, message: str, files_changed: bool):
+        super().__init__(message)
+        self.files_changed = files_changed
+
+
+def swap_server_files(server_path: Path, zip_path: Path, *, backup_manager, preserve: List[str],
+                      compress: bool = False, version: Optional[str] = None, fresh: bool = False,
+                      keep_backups: Optional[int] = None, progress=None, log=None) -> dict:
+    """The destructive heart of Update, for one stopped Server: back up the
+    preserved items -> wipe the folder -> extract the ZIP -> restore the
+    preserved items -> merge in new server.properties keys -> record the
+    version -> trim old backups. A fresh install only extracts. Raises
+    UpdateError. progress(pct, text) and log(msg, level) may be called from
+    whatever thread this runs on."""
+    progress = progress or (lambda pct, text=None: None)
+    log = log or (lambda msg, level="info": None)
+    server_path, zip_path = Path(server_path), Path(zip_path)
+    backup_path, backed_up, wiped = None, [], False
+    try:
+        if not fresh:
+            progress(10, "Creating backup...")
+            log("Creating backup...", "info")
+            _, backup_path, backed_up = backup_manager.create_backup(
+                preserve, compress=compress, progress_callback=lambda p: progress(10 + p * 0.2))
+            log(f"Backup created: {len(backed_up)} items", "success")
+            progress(35, "Removing old files...")
+            log("Removing old server files...", "info")
+            wiped = True
+            # _long_path everywhere below: Bedrock's resource packs nest deep
+            # enough to pass Windows' 260-character path limit under a long
+            # install folder.
+            for item in server_path.iterdir():
+                if item.is_dir(): shutil.rmtree(_long_path(item))
+                else: os.remove(_long_path(item))
+        else:
+            log("Fresh install: skipping backup and cleanup.", "info")
+        progress(50, "Extracting server files...")
+        log(f"Extracting: {zip_path.name}", "info")
+        wiped = True
+        with zipfile.ZipFile(_long_path(zip_path), 'r') as zf:
+            members = zf.namelist()
+            for i, member in enumerate(members):
+                zf.extract(member, _long_path(server_path))
+                if i % 100 == 0:
+                    progress(50 + (i / len(members)) * 40)
+        log(f"Extracted {len(members)} files", "success")
+        # Keep the new version's stock server.properties before the restore
+        # below overwrites it with the user's old one, so any settings this
+        # Bedrock Server Version introduced can be merged back in afterwards.
+        fresh_props_text = None
+        if not fresh and "server.properties" in backed_up:
+            fresh_props = server_path / "server.properties"
+            if fresh_props.exists():
+                fresh_props_text = fresh_props.read_text()
+        if not fresh:
+            progress(90, "Restoring preserved files...")
+            log("Restoring preserved files...", "info")
+            for item in backed_up:
+                dest = server_path / item
+                if backup_path.suffix == '.zip':
+                    with zipfile.ZipFile(_long_path(backup_path), 'r') as zf:
+                        for name in zf.namelist():
+                            if name.startswith(item):
+                                zf.extract(name, _long_path(server_path))
+                else:
+                    source = backup_path / item
+                    if dest.exists():
+                        if dest.is_dir(): shutil.rmtree(_long_path(dest))
+                        else: os.remove(_long_path(dest))
+                    if source.is_dir(): shutil.copytree(_long_path(source), _long_path(dest))
+                    else: shutil.copy2(_long_path(source), _long_path(dest))
+        if version:
+            record_installed_version(server_path, version)
+        if fresh_props_text:
+            for key, value in merge_new_server_properties(fresh_props_text, server_path / "server.properties"):
+                log(f"New setting in this Bedrock Server Version, added to server.properties: "
+                    f"{key}={value}", "info")
+        if not fresh and keep_backups is not None:
+            deleted = backup_manager.cleanup_old_backups(keep_backups)
+            if deleted > 0:
+                log(f"Cleaned up {deleted} old backup(s)", "info")
+    except Exception as e:
+        where = f" (its backup: {backup_path})" if wiped and backup_path else ""
+        raise UpdateError(f"{e}{where}", files_changed=wiped) from e
+    return {"backup": backup_path, "backed_up": backed_up}
+
+
 def detect_server_version(server_path: Path) -> str:
-    # Try version.txt first
+    # What the app itself recorded (install/update, or the engine's startup line).
+    marker = Path(server_path) / VERSION_MARKER
+    if marker.exists():
+        try:
+            v = marker.read_text().strip()
+            if v:
+                return v
+        except OSError:
+            pass
+    # Older fallbacks (Mojang no longer ships a version number in these files).
     version_file = server_path / "version.txt"
     if version_file.exists():
         try:
@@ -1025,7 +1311,41 @@ class ServerService:
         self.backup_manager = BackupManager(self.server_path, config)
         self.console_buffer = deque(maxlen=config.get("console_max_lines", 1000))
         self.server_manager.add_output_callback(self.console_buffer.append)
+        self.server_manager.add_output_callback(self._note_engine_version)
+        self._online: set = set()
+        self._online_lock = threading.Lock()
+        self.server_manager.add_output_callback(self._note_join_leave)
+        self.server_manager.add_status_callback(self._clear_online_when_stopped)
         self._op_lock = threading.Lock()
+        # Set while Update swaps this Server's files: a start then (from this
+        # GUI or a remote Administrator) would run a half-extracted engine.
+        self.update_in_progress = False
+
+    def online_players(self) -> List[str]:
+        """Names of the players on this Server right now (sorted)."""
+        with self._online_lock:
+            return sorted(self._online)
+
+    def _note_join_leave(self, line: str):
+        m = PLAYER_JOIN_LEAVE_RE.search(line)
+        if m:
+            with self._online_lock:
+                if m.group(1).lower() == "connected":
+                    self._online.add(m.group(2))
+                else:
+                    self._online.discard(m.group(2))
+
+    def _clear_online_when_stopped(self, status: str):
+        if status == "stopped":
+            with self._online_lock:
+                self._online.clear()
+
+    def _note_engine_version(self, line: str):
+        """The engine prints "Version: 1.26.52.3" at startup -- record it, so a
+        Server installed before the app tracked versions stops showing Unknown."""
+        m = _CONSOLE_VERSION_RE.search(line)
+        if m and detect_server_version(self.server_path) != m.group(1):
+            record_installed_version(self.server_path, m.group(1))
 
     # --- process control -------------------------------------------------
     def is_running(self) -> bool:
@@ -1033,7 +1353,7 @@ class ServerService:
 
     def start(self) -> bool:
         with self._op_lock:
-            if self.server_manager.is_running():
+            if self.server_manager.is_running() or self.update_in_progress:
                 return False
             return self.server_manager.start()
 
@@ -1043,6 +1363,8 @@ class ServerService:
 
     def restart(self) -> bool:
         with self._op_lock:
+            if self.update_in_progress:
+                return False
             if self.server_manager.is_running():
                 self.server_manager.stop()
                 time.sleep(2)
@@ -1936,6 +2258,10 @@ class RemoteServerAccess:
     def note_status(self, running: bool):
         self._running = bool(running)
 
+    def online_players(self):
+        """Not reported over the wire (yet): None means unknown, not 'nobody'."""
+        return None
+
     # --- process control -------------------------------------------------
     def is_running(self) -> bool:
         return self._running
@@ -2062,6 +2388,15 @@ class BedrockUpdaterApp:
         # Servers (by access object) already checked this session for the
         # "not set to NetherNet" console warning, so the fix is offered once.
         self._transport_checked: set = set()
+        # Update tab: latest release from Mojang (refresh_update_status) and the
+        # selected Server's installed version (set by _apply_server_info).
+        self._latest_release: Optional[Dict[str, str]] = None
+        self._latest_error: Optional[str] = None
+        self._latest_checked_at = 0.0
+        self._latest_check_running = False
+        self._announce_latest = False  # log the result of the startup check once
+        self._installed_version = "—"
+        self._server_folder_state = "none"  # "valid" | "empty" | "invalid" | "none"
         # The Server currently shown in the tabs, as a uniform access object
         # (a local ServerService or a RemoteServerAccess). active_remote is
         # (machine_id, server_id) when remote, else None.
@@ -2183,6 +2518,19 @@ class BedrockUpdaterApp:
         top_bar.pack(fill=tk.X, side=tk.TOP, padx=5, pady=(5, 0))
         self.sidebar_toggle_btn = ttk.Button(top_bar, command=self.toggle_sidebar)
         self.sidebar_toggle_btn.pack(side=tk.LEFT)
+        # Server strip (3.0, docs/V3-SERVERS-PLAN.md §1): one button per Server
+        # of the selected Machine, "+"/"−" pinned right. "Server N" is display-
+        # only: N is the position in the list, never stored anywhere.
+        self.server_remove_btn = ttk.Button(top_bar, text="−", width=3, command=self.remove_server_dialog)
+        self.server_remove_btn.pack(side=tk.RIGHT)
+        self.server_add_btn = ttk.Button(top_bar, text="+", width=3, command=self.new_server_dialog)
+        self.server_add_btn.pack(side=tk.RIGHT, padx=(0, 2))
+        self.server_strip = ttk.Frame(top_bar)
+        self.server_strip.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        self.server_strip.bind("<Configure>", self._on_strip_resize)
+        self._strip_choice = tk.StringVar(value="")
+        self._strip_layout_pending = False
+        self._strip_last_width = 0
 
         # Sidebar (Machines -> Servers) + the existing tabbed Notebook, side by
         # side in a resizable pane. See docs/V2-MAJORDOMO-PLAN.md, "GUI: sidebar
@@ -2263,7 +2611,7 @@ class BedrockUpdaterApp:
         self.sidebar_tree.bind("<<TreeviewSelect>>", self.on_sidebar_select)
         btns = ttk.Frame(parent)
         btns.pack(fill=tk.X, padx=4, pady=(0, 6))
-        ttk.Button(btns, text="➕ Server", command=self.add_server_profile).pack(fill=tk.X, pady=(0, 2))
+        # Adding a Server is the top line's "+" since 3.0.
         ttk.Button(btns, text="➕ Machine", command=self.add_machine_dialog).pack(fill=tk.X)
 
     def toggle_sidebar(self):
@@ -2284,6 +2632,493 @@ class BedrockUpdaterApp:
             self.sidebar_toggle_btn.config(text="▶ Machines")
         else:
             self.sidebar_toggle_btn.config(text="◀ Hide")
+
+    # --- Top-line Server strip (3.0) -------------------------------------
+    STRIP_WORLD_MAX = 22  # characters of the World name before "…"
+
+    def _strip_entries(self) -> List[dict]:
+        """The Servers of the Machine currently in view, in list order. Each:
+        key, number, world (full), running, online (count or None if unknown)."""
+        entries = []
+        remote_mid = None
+        if self.active_remote:
+            remote_mid = self.active_remote[0]
+        elif self._overview_kind and self._overview_kind[0] == "machine" and self._overview_kind[1] == "remote":
+            remote_mid = self._overview_kind[2]
+        if remote_mid:
+            servers = self._remote_state.get(remote_mid, {}).get("servers", [])
+            for n, sv in enumerate(servers, 1):
+                entries.append({"key": f"r|{remote_mid}|{sv['id']}", "number": n,
+                                "world": sv.get("name") or "Server", "running": bool(sv.get("running")),
+                                "online": None})
+            return entries
+        for n, (pid, profile) in enumerate(self.config.get("server_profiles", {}).items(), 1):
+            world = ""
+            try:
+                world = parse_server_properties(Path(profile.get("path", "")) / "server.properties").get("level-name", "")
+            except Exception:
+                pass
+            ctx = self.contexts.get(pid)
+            entries.append({"key": f"l|{pid}", "number": n, "world": world or profile.get("name") or "Server",
+                            "running": bool(ctx and ctx.is_running()),
+                            "online": len(ctx.online_players()) if ctx else 0})
+        return entries
+
+    def _strip_selected_key(self) -> str:
+        if self._overview_kind:
+            return ""  # Fleet / Machine page: no single Server is selected
+        if self.active_remote:
+            return f"r|{self.active_remote[0]}|{self.active_remote[1]}"
+        pid = self.config.get("active_profile")
+        return f"l|{pid}" if pid else ""
+
+    @classmethod
+    def _strip_label(cls, e: dict, short: bool = True) -> str:
+        world = e["world"]
+        if short and len(world) > cls.STRIP_WORLD_MAX:
+            world = world[:cls.STRIP_WORLD_MAX - 1].rstrip() + "…"
+        return f"{'🟢' if e['running'] else '⚪'} Server {e['number']}: {world}"
+
+    def _on_strip_resize(self, event):
+        # Only a width change can change what fits; ignoring height changes
+        # avoids a redraw loop (adding/removing "▾ N more" can nudge the height).
+        if event.width != self._strip_last_width:
+            self._strip_last_width = event.width
+            self._schedule_strip_layout()
+
+    def _schedule_strip_layout(self):
+        """Coalesce redraws (status changes, resizes) into one after idle -- and
+        never rebuild the buttons from inside one of their own click handlers."""
+        if not hasattr(self, "server_strip") or self._strip_layout_pending:
+            return
+        self._strip_layout_pending = True
+        self.root.after_idle(self._layout_strip)
+
+    def _layout_strip(self):
+        self._strip_layout_pending = False
+        for w in self.server_strip.winfo_children():
+            w.destroy()
+        entries = self._strip_entries()
+        selected = self._strip_selected_key()
+        self._strip_choice.set(selected)
+        buttons = []
+        for e in entries:
+            b = ttk.Radiobutton(self.server_strip, text=self._strip_label(e), value=e["key"],
+                                variable=self._strip_choice, style="Toolbutton",
+                                command=lambda k=e["key"]: self._on_strip_select(k))
+            tip = self._strip_label(e, short=False)
+            if e["online"] is not None:
+                tip += f"\n{e['online']} player{'s' if e['online'] != 1 else ''} online"
+            self.create_tooltip(b, tip)
+            buttons.append((e, b))
+        # Fit as many as the width allows; the rest go into "▾ N more". The
+        # selected Server always stays visible (it takes the last visible slot).
+        avail = self.server_strip.winfo_width()
+        more = ttk.Menubutton(self.server_strip, text="▾ 99 more")
+        more_w = more.winfo_reqwidth() + 4
+        shown, used = [], 0
+        for i, (e, b) in enumerate(buttons):
+            w = b.winfo_reqwidth() + 4
+            rest_needs_more = i < len(buttons) - 1
+            if avail <= 1 or used + w + (more_w if rest_needs_more else 0) <= avail:
+                shown.append((e, b)); used += w
+            else:
+                break
+        hidden = [(e, b) for e, b in buttons if (e, b) not in shown]
+        if hidden and selected and selected not in [e["key"] for e, _ in shown]:
+            sel = next(eb for eb in hidden if eb[0]["key"] == selected)
+            if shown:
+                hidden.append(shown.pop())
+            shown.append(sel); hidden.remove(sel)
+            hidden.sort(key=lambda eb: eb[0]["number"])
+        for _, b in shown:
+            b.pack(side=tk.LEFT, padx=(0, 4))
+        if hidden:
+            more.config(text=f"▾ {len(hidden)} more")
+            menu = tk.Menu(more, tearoff=False)
+            for e, b in hidden:
+                menu.add_command(label=self._strip_label(e, short=False),
+                                 command=lambda k=e["key"]: self._on_strip_select(k))
+                b.destroy()
+            more["menu"] = menu
+            more.pack(side=tk.LEFT)
+        else:
+            more.destroy()
+        # "−" is only usable for local Servers when there is more than one.
+        local_count = len(self.config.get("server_profiles", {}))
+        remote_view = bool(entries and entries[0]["key"].startswith("r|"))
+        self.server_remove_btn.config(state=tk.NORMAL if (local_count > 1 and not remote_view) else tk.DISABLED)
+        self.server_add_btn.config(state=tk.DISABLED if remote_view else tk.NORMAL)
+        self._refresh_update_all_button()  # the Server count may have changed
+
+    def _on_strip_select(self, key: str):
+        kind, *rest = key.split("|")
+        if kind == "l":
+            pid = rest[0]
+            if pid == self.config.get("active_profile") and not self.active_remote and not self._overview_kind:
+                return
+            if not self._confirm_leave_unsaved():
+                self._schedule_strip_layout()  # put the highlight back
+                return
+            self._switch_to_profile(pid)
+        else:
+            self._select_remote_server(rest[0], rest[1])
+        self._schedule_strip_layout()
+
+    def _local_world_sources(self) -> List[Tuple[str, Path, bool]]:
+        """(label, world folder, its Server is running) for every World of every
+        local Server -- the choices for 'start from a copy of an existing World'."""
+        out = []
+        for n, (pid, profile) in enumerate(self.config.get("server_profiles", {}).items(), 1):
+            worlds_dir = Path(profile.get("path", "")) / "worlds"
+            ctx = self.contexts.get(pid)
+            running = bool(ctx and ctx.is_running())
+            try:
+                for w in sorted(p for p in worlds_dir.iterdir() if p.is_dir()):
+                    out.append((f"Server {n}: {w.name}", w, running))
+            except OSError:
+                pass
+        return out
+
+    def new_server_dialog(self):
+        """'+': create a new, completely separate Server with the newest Bedrock
+        Server Version -- no ZIP to find, no version to type (plan §2)."""
+        if self.active_remote or self.is_updating:
+            return
+        if not self._confirm_leave_unsaved():
+            return
+        profiles = self.config.get("server_profiles", {})
+        number = len(profiles) + 1
+        dlg = tk.Toplevel(self.root)
+        dlg.title("New Server")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        body = ttk.Frame(dlg, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text=f"New Server (Server {number})", font=("TkDefaultFont", 12, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        ttk.Label(body, text="Name players see:").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=3)
+        name_var = tk.StringVar(value=f"Server {number}")
+        name_entry = ttk.Entry(body, textvariable=name_var, width=34)
+        name_entry.grid(row=1, column=1, sticky="w", pady=3)
+
+        ttk.Label(body, text="Game mode:").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=3)
+        gm_var = tk.StringVar(value="survival")
+        gm = ttk.Frame(body); gm.grid(row=2, column=1, sticky="w", pady=3)
+        for mode in ("survival", "creative", "adventure"):
+            ttk.Radiobutton(gm, text=mode.capitalize(), value=mode, variable=gm_var).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Label(body, text="Start with:").grid(row=3, column=0, sticky="ne", padx=(0, 6), pady=3)
+        world_mode = tk.StringVar(value="new")
+        wf = ttk.Frame(body); wf.grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Radiobutton(wf, text="A new World", value="new", variable=world_mode).grid(row=0, column=0, sticky="w")
+        seed_row = ttk.Frame(wf); seed_row.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(0, 4))
+        seed_label = ttk.Label(seed_row, text="Seed (optional):")
+        seed_label.pack(side=tk.LEFT)
+        seed_var = tk.StringVar()
+        seed_entry = ttk.Entry(seed_row, textvariable=seed_var, width=24)
+        seed_entry.pack(side=tk.LEFT, padx=(6, 0))
+        self.create_tooltip(seed_entry, "The same seed gives the same landscape.\nLeave it empty for a random World.")
+        sources = self._local_world_sources()
+        copy_rb = ttk.Radiobutton(wf, text="A copy of an existing World:", value="copy", variable=world_mode)
+        copy_rb.grid(row=2, column=0, sticky="w")
+        choices = [lbl + ("   (stop that Server first)" if running else "") for lbl, _, running in sources]
+        src_var = tk.StringVar(value=choices[0] if choices else "")
+        src_combo = ttk.Combobox(wf, textvariable=src_var, values=choices, state="readonly", width=40)
+        src_combo.grid(row=3, column=0, sticky="w", padx=(20, 0))
+        if not sources:
+            copy_rb.config(state=tk.DISABLED); src_combo.config(state=tk.DISABLED)
+
+        def on_world_mode(*_):
+            # A seed only shapes a World Bedrock generates; a copy already has its landscape.
+            new = world_mode.get() == "new"
+            seed_entry.config(state=tk.NORMAL if new else tk.DISABLED)
+            seed_label.config(foreground="" if new else "gray")
+        world_mode.trace_add("write", on_world_mode)
+
+        notes = ["The newest Bedrock Server Version is downloaded and installed in its own folder."]
+        if profiles:
+            notes.append("Only one Server per computer can show up in Minecraft's LAN list, so players "
+                         "add this one under Servers → Add Server with this computer's IP and port "
+                         "(shown when it's ready).")
+        if sys.platform == "win32":
+            notes.append("When it first starts, Windows will ask to allow bedrock_server.exe on the "
+                         "network — choose Allow, or players can't connect.")
+        ttk.Label(body, text="\n".join("• " + n for n in notes), foreground="gray", wraplength=460,
+                  justify=tk.LEFT).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 6))
+        status = ttk.Label(body, text="", foreground="gray", wraplength=460, justify=tk.LEFT)
+        status.grid(row=5, column=0, columnspan=2, sticky="w")
+        bar = ttk.Progressbar(body, maximum=100)
+        bar.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+
+        btns = ttk.Frame(body); btns.grid(row=7, column=0, columnspan=2, sticky="ew")
+        existing = ttk.Button(btns, text="Use an existing Bedrock folder instead…", style="Small.TButton",
+                              command=lambda: (dlg.destroy(), self.add_server_profile()))
+        existing.pack(side=tk.LEFT)
+        cancel = ttk.Button(btns, text="Cancel", command=dlg.destroy)
+        cancel.pack(side=tk.RIGHT)
+        create = ttk.Button(btns, text="Create Server", style="Primary.TButton")
+        create.pack(side=tk.RIGHT, padx=(0, 6))
+
+        def set_status(text, pct=None, error=False):
+            status.config(text=text, foreground="#C62828" if error else "gray")
+            if pct is not None:
+                bar["value"] = pct
+
+        def on_create():
+            name = name_var.get().strip()
+            if not name or any(c in name for c in ';/\\:*?"<>|'):
+                set_status("Give the Server a name without ; / \\ : * ? \" < > |", error=True)
+                return
+            copy_from = None
+            if world_mode.get() == "copy" and sources:
+                idx = choices.index(src_var.get()) if src_var.get() in choices else -1
+                if idx < 0:
+                    set_status("Choose which World to copy.", error=True); return
+                if sources[idx][2]:
+                    set_status("That World's Server is running. Stop it first, so the copy is complete.", error=True)
+                    return
+                copy_from = sources[idx][1]
+            for w in (name_entry, create, cancel, existing, src_combo, copy_rb, seed_entry):
+                w.config(state=tk.DISABLED)
+            dlg.protocol("WM_DELETE_WINDOW", lambda: None)  # don't close mid-install
+            self._create_server_async(dlg, set_status, name, gm_var.get(), copy_from,
+                                      seed="" if copy_from else seed_var.get().strip())
+
+        create.config(command=on_create)
+        dlg.bind("<Return>", lambda e: on_create())
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        name_entry.focus_set(); name_entry.select_range(0, tk.END)
+        dlg.grab_set()
+
+    def _create_server_async(self, dlg, set_status, name: str, gamemode: str, copy_from: Optional[Path],
+                             seed: str = ""):
+        profiles = self.config.get("server_profiles", {})
+        profile_id = uuid.uuid4().hex[:8]
+        # Next to Server 1's folder; a first-ever Server goes under the home folder.
+        first = next(iter(profiles.values()), None)
+        parent = Path(first["path"]).parent if first else Path.home() / "Bedrock Servers"
+        target = parent / f"server-{profile_id}"  # permanent, never shown, never renamed
+        used = set()
+        for p in profiles.values():
+            props = parse_server_properties(Path(p.get("path", "")) / "server.properties")
+            for key in ("server-port", "server-portv6"):
+                if props.get(key, "").isdigit():
+                    used.add(int(props[key]))
+        lan_visible = not profiles  # only the first Server on this computer
+        ui = lambda fn: self.root.after(0, fn)
+
+        def worker():
+            try:
+                rel = self._latest_release
+                if not rel:
+                    ui(lambda: set_status("Asking Mojang for the newest version…"))
+                    rel = fetch_latest_bedrock_release()
+                dl = Path(get_downloads_folder()); dl.mkdir(parents=True, exist_ok=True)
+                zpath = download_bedrock_zip(rel["url"], dl, progress_callback=lambda p: ui(
+                    lambda p=p: set_status(f"Downloading {rel['version']}… {p:.0f}%", p * 0.8)))
+                # A first-ever Server gets Bedrock's standard port; later ones the next free pair.
+                port = find_free_server_port(used, start=19132 if lan_visible else NEW_SERVER_FIRST_PORT)
+                ui(lambda: set_status(f"Installing {rel['version']}…", 85))
+                create_server_folder(zpath, target, server_name=name, gamemode=gamemode, port=port,
+                                     lan_visible=lan_visible, world_name=name, copy_world_from=copy_from,
+                                     version=rel["version"], seed=seed)
+            except Exception as e:
+                _LOG.exception("Creating a new Server failed")
+                shutil.rmtree(_long_path(target), ignore_errors=True)  # never leave a half-made Server
+                def failed(e=e):
+                    set_status(f"Couldn't create the Server: {e}", error=True)
+                    dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+                    tk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=(0, 10))
+                ui(failed)
+                return
+            ui(lambda: self._finish_new_server(dlg, profile_id, name, target, port, lan_visible, rel["version"]))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_new_server(self, dlg, profile_id, name, target: Path, port: int, lan_visible: bool, version):
+        self._sync_flat_settings_into_active_profile()
+        self.config.setdefault("server_profiles", {})[profile_id] = {
+            "name": name,
+            "path": str(target),
+            "preserve_items": copy.deepcopy(DEFAULT_PRESERVE_ITEMS),
+            "max_backups": 5,
+            "compress_backups": False,
+            "auto_cleanup_backups": True,
+            "auto_stop_server_before_update": True,
+            "auto_start_server_after_update": False,
+            "known_players": {},
+        }
+        save_config(self.config)
+        try:
+            dlg.grab_release(); dlg.destroy()
+        except tk.TclError:
+            pass
+        self._switch_to_profile(profile_id)
+        self.notebook.select(self.properties_editor)  # review before the first start
+        self.properties_editor.load_properties()
+        self.log(f"New Server '{name}' created with Bedrock Server Version {version} in {target} (port {port}).", "success")
+        how = ("It shows up in Minecraft's LAN list." if lan_visible else
+               f"Players add it in Minecraft under Servers → Add Server:\n"
+               f"    Address: {get_local_ip()}\n    Port: {port}")
+        messagebox.showinfo("Server created",
+            f"'{name}' is ready (not started yet).\n\n{how}\n\n"
+            "Review its settings here, then press Start on the 🎮 Server tab.")
+
+    def remove_server_dialog(self):
+        """'−': pick ANY local Server (nothing preselected), then a typed-name
+        confirmation that lists exactly what will be deleted (plan §3)."""
+        if self.active_remote:
+            return
+        if self.is_updating:
+            messagebox.showinfo("Remove a Server", "Wait until the update has finished.")
+            return
+        entries = [e for e in self._strip_entries() if e["key"].startswith("l|")]
+        if len(entries) <= 1:
+            messagebox.showinfo("Remove a Server", "You can't remove your only Server.")
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Remove a Server")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        body = ttk.Frame(dlg, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        choice = tk.StringVar(value="")
+
+        def clear():
+            for w in body.winfo_children():
+                w.destroy()
+
+        def pick_page():
+            clear()
+            ttk.Label(body, text="Which Server do you want to remove?",
+                      font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
+            for e in entries:
+                ctx = self.contexts.get(e["key"][2:])
+                online = len(ctx.online_players()) if ctx else 0
+                text = self._strip_label(e, short=False)
+                rb = ttk.Radiobutton(body, text=text, value=e["key"], variable=choice,
+                                     command=lambda: nxt.config(state=tk.NORMAL))
+                if online:
+                    rb.config(text=f"{text}   — {online} player{'s' if online != 1 else ''} online", state=tk.DISABLED)
+                rb.pack(anchor="w", pady=1)
+            row = ttk.Frame(body); row.pack(fill=tk.X, pady=(12, 0))
+            ttk.Button(row, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
+            nxt = ttk.Button(row, text="Next…", state=tk.DISABLED, command=confirm_page)
+            nxt.pack(side=tk.RIGHT, padx=(0, 6))
+            if choice.get():
+                nxt.config(state=tk.NORMAL)
+
+        def confirm_page():
+            e = next(x for x in entries if x["key"] == choice.get())
+            pid = e["key"][2:]
+            profile = self.config["server_profiles"][pid]
+            path = Path(profile["path"])
+            ctx = self.contexts.get(pid)
+            try:
+                worlds = sorted(p.name for p in (path / "worlds").iterdir() if p.is_dir())
+            except OSError:
+                worlds = []
+            bdir = server_backup_dir(path)
+            try:
+                n_backups = sum(1 for p in bdir.iterdir() if p.name.startswith("backup_"))
+            except OSError:
+                n_backups = 0
+            clear()
+            title = self._strip_label(e, short=False)[2:]  # without the dot
+            ttk.Label(body, text=f"Permanently delete {title}?", font=("TkDefaultFont", 12, "bold"),
+                      foreground="#C62828").pack(anchor="w", pady=(0, 8))
+            lines = [f"Its folder: {path}",
+                     f"Worlds: {', '.join(worlds) if worlds else '(none yet)'}",
+                     f"Backups: {n_backups} (in {bdir})"]
+            ttk.Label(body, text="This deletes, and it can't be undone:\n" + "\n".join("   • " + l for l in lines),
+                      justify=tk.LEFT, wraplength=520).pack(anchor="w")
+            if ctx and ctx.is_running():
+                ttk.Label(body, text="It's running and will be stopped first.", foreground="#E65100").pack(anchor="w", pady=(6, 0))
+            ttk.Label(body, text=f"\nType  {e['world']}  to confirm:").pack(anchor="w")
+            typed = tk.StringVar()
+            entry = ttk.Entry(body, textvariable=typed, width=40); entry.pack(anchor="w", pady=(2, 8))
+            status = ttk.Label(body, text="", foreground="gray", wraplength=520, justify=tk.LEFT)
+            status.pack(anchor="w")
+            row = ttk.Frame(body); row.pack(fill=tk.X, pady=(8, 0))
+            ttk.Button(row, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
+            delete = ttk.Button(row, text="Delete permanently", style="Danger.TButton", state=tk.DISABLED,
+                                command=lambda: self._remove_server_async(dlg, status, pid, e))
+            delete.pack(side=tk.RIGHT, padx=(0, 6))
+            ttk.Button(row, text="◀ Back", command=pick_page).pack(side=tk.LEFT)
+            typed.trace_add("write", lambda *a: delete.config(
+                state=tk.NORMAL if typed.get().strip() == e["world"] else tk.DISABLED))
+            entry.focus_set()
+
+        pick_page()
+        dlg.bind("<Escape>", lambda ev: dlg.destroy())
+        dlg.grab_set()
+
+    def _remove_server_async(self, dlg, status, pid: str, entry: dict):
+        ctx = self.contexts.get(pid)
+        if ctx and ctx.online_players():  # someone joined meanwhile
+            status.config(text="Players are online now — try again when they've left.", foreground="#C62828")
+            return
+        for w in dlg.winfo_children():
+            for c in w.winfo_children():
+                try:
+                    c.config(state=tk.DISABLED)
+                except tk.TclError:
+                    pass
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        path = Path(self.config["server_profiles"][pid]["path"])
+        status.config(text="Stopping…" if ctx and ctx.is_running() else "Deleting…", foreground="gray")
+
+        def worker():
+            leftovers, refused = [], None
+            try:
+                if ctx and ctx.is_running():
+                    ctx.stop()
+                    for _ in range(60):  # the engine releases its files only once it has exited
+                        if not ctx.is_running():
+                            break
+                        time.sleep(0.5)
+                self.root.after(0, lambda: status.config(text="Deleting…"))
+                leftovers = delete_server_files(path)
+            except ValueError as e:
+                refused = str(e)
+            except Exception as e:
+                _LOG.exception("Removing a Server failed")
+                refused = f"Deleting failed: {e}"
+            self.root.after(0, lambda: self._finish_remove_server(dlg, pid, entry, path, leftovers, refused))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_remove_server(self, dlg, pid, entry, path: Path, leftovers: List[str], refused: Optional[str]):
+        label = self._strip_label(entry, short=False)[2:]
+        self.config["server_profiles"].pop(pid, None)
+        self.contexts.pop(pid, None)
+        if self.config.get("active_profile") == pid or not self.config.get("active_profile"):
+            first = next(iter(self.config["server_profiles"]), None)
+            self.config["active_profile"] = None
+            # Empty the Server Folder field first: switching saves the "current"
+            # Server, and with the deleted folder still in it, that save would
+            # quietly re-create a list entry for the Server just removed.
+            self.server_entry.delete(0, tk.END)
+            if first:
+                self._switch_to_profile(first)
+        save_config(self.config)
+        self.refresh_sidebar()
+        try:
+            dlg.grab_release(); dlg.destroy()
+        except tk.TclError:
+            pass
+        if refused:
+            self.log(f"Removed {label} from the list; its files were not deleted: {refused}", "warning")
+            messagebox.showwarning("Server removed from the list",
+                f"{label} is no longer listed, but its files were NOT deleted:\n\n{refused}")
+        elif leftovers:
+            self.log(f"Removed {label}; some files couldn't be deleted: {leftovers[:5]}", "warning")
+            messagebox.showwarning("Server removed",
+                f"{label} was removed, but these couldn't be deleted (delete them by hand):\n\n"
+                + "\n".join(leftovers[:10]) + ("\n…" if len(leftovers) > 10 else ""))
+        else:
+            self.log(f"Removed {label} and deleted its folder {path} and its backups.", "success")
+            messagebox.showinfo("Server removed", f"{label} and its backups were deleted.")
 
     def refresh_sidebar(self):
         """Rebuild the Machines/Servers tree from config + live registry/connection state."""
@@ -2344,6 +3179,7 @@ class BedrockUpdaterApp:
                     pass
         finally:
             self._sidebar_refreshing = False
+        self._schedule_strip_layout()  # the top-line Server strip mirrors the same state
         # Keep whatever overview page is on screen live (status dots etc.).
         if self._overview_kind:
             if self._overview_kind[0] == "fleet":
@@ -2670,7 +3506,7 @@ class BedrockUpdaterApp:
                     conn.close()
                     self.root.after(0, lambda: on_ok(info))
                 except Exception as e:
-                    self.root.after(0, lambda: status.config(text=f"✗ {e}", foreground="#F44336"))
+                    self.root.after(0, lambda e=e: status.config(text=f"✗ {e}", foreground="#F44336"))
 
             def on_ok(info):
                 status.config(text=f"✓ Connected to {info.get('name', host)} "
@@ -2890,20 +3726,41 @@ class BedrockUpdaterApp:
         header = ttk.Frame(self.main_tab)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         ttk.Label(header, text="Update Bedrock Server", font=("TkDefaultFont", 14, "bold")).pack(side=tk.LEFT)
-        file_frame = ttk.LabelFrame(self.main_tab, text="File Selection", padding=10)
-        file_frame.grid(row=1, column=0, sticky="ew", pady=5)
-        file_frame.columnconfigure(1, weight=1)
-        
-        ttk.Label(file_frame, text="New Bedrock Server Version (ZIP):").grid(row=0, column=0, sticky="e", padx=5, pady=5)
-        self.zip_entry = ttk.Entry(file_frame)
+
+        # The app asks Mojang for the newest release itself (fetch_latest_bedrock_release),
+        # so updating is one button -- no Wiki lookup, typing or ZIP hunting.
+        version_frame = ttk.LabelFrame(self.main_tab, text="Bedrock Server Version", padding=10)
+        version_frame.grid(row=1, column=0, sticky="ew", pady=5)
+        version_frame.columnconfigure(0, weight=1)
+        self.update_version_label = ttk.Label(version_frame, text="Installed: —   ·   Latest: —",
+                                              font=("TkDefaultFont", 11))
+        self.update_version_label.grid(row=0, column=0, sticky="w")
+        self.update_state_label = ttk.Label(version_frame, text="", foreground="gray")
+        self.update_state_label.grid(row=1, column=0, sticky="w", pady=(2, 6))
+        actions = ttk.Frame(version_frame)
+        actions.grid(row=2, column=0, sticky="w")
+        self.update_button = ttk.Button(actions, text="Update", command=self.start_update, style="Primary.TButton")
+        self.update_button.pack(side=tk.LEFT)
+        # Only shown with two or more Servers on this Machine (_refresh_update_button).
+        self.update_all_button = ttk.Button(actions, text="Update all Servers", command=self.update_all_servers)
+        ttk.Button(actions, text="🔄 Check again", style="Small.TButton",
+                   command=lambda: self.refresh_update_status(force=True)).pack(side=tk.LEFT, padx=(8, 0))
+        self.advanced_toggle = ttk.Button(actions, text="Advanced ▸", style="Small.TButton",
+                                          command=self._toggle_update_advanced)
+        self.advanced_toggle.pack(side=tk.LEFT, padx=(8, 0))
+
+        # Advanced: a specific ZIP or a manually entered version. Only needed if
+        # the automatic check can't reach Mojang (it opens by itself then).
+        self.advanced_frame = ttk.Frame(version_frame)
+        self.advanced_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.advanced_frame, text="Bedrock Server ZIP:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        self.zip_entry = ttk.Entry(self.advanced_frame)
         self.zip_entry.grid(row=0, column=1, sticky="ew", padx=5)
         self.zip_entry.bind("<KeyRelease>", self.validate_inputs)
-        ttk.Button(file_frame, text="Browse", command=self.browse_zip).grid(row=0, column=2, padx=5)
-        self.zip_status = ttk.Label(file_frame, text="", foreground="gray")
+        ttk.Button(self.advanced_frame, text="Browse", command=self.browse_zip).grid(row=0, column=2, padx=5)
+        ttk.Button(self.advanced_frame, text="Enter a version…", command=self.manual_version_input).grid(row=0, column=3, padx=5)
+        self.zip_status = ttk.Label(self.advanced_frame, text="", foreground="gray")
         self.zip_status.grid(row=1, column=1, sticky="w", padx=5)
-        
-        self.update_installed_label = ttk.Label(file_frame, text="Installed Bedrock Server Version: —", foreground="gray")
-        self.update_installed_label.grid(row=2, column=1, sticky="w", padx=5, pady=(4, 0))
 
         # Per-Server update policy (docs/V2-MAJORDOMO-PLAN.md) -- lives here,
         # not the app-level Settings tab, since it's specific to this Server.
@@ -2927,17 +3784,6 @@ class BedrockUpdaterApp:
         button_frame = ttk.Frame(self.main_tab)
         button_frame.grid(row=5, column=0, sticky="ew", pady=5)
 
-        # Normal update procedure, laid out as numbered steps 1 -> 2 -> 3 (left).
-        steps = ttk.Frame(button_frame)
-        steps.pack(side=tk.LEFT)
-        ttk.Label(steps, text="To update:", font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(steps, text="1:  🌐 Wiki Version", command=self.manual_version_input).pack(side=tk.LEFT)
-        ttk.Label(steps, text="→", style="Arrow.TLabel").pack(side=tk.LEFT, padx=5)
-        ttk.Button(steps, text="2:  ⬇️ Download Latest", command=self.open_download_page).pack(side=tk.LEFT)
-        ttk.Label(steps, text="→", style="Arrow.TLabel").pack(side=tk.LEFT, padx=5)
-        self.update_button = ttk.Button(steps, text="3:  🚀 Update Server", command=self.start_update, style="Primary.TButton")
-        self.update_button.pack(side=tk.LEFT)
-
         # Secondary, occasional actions: smaller and tucked to the right.
         extras = ttk.Frame(button_frame)
         extras.pack(side=tk.RIGHT)
@@ -2960,14 +3806,14 @@ class BedrockUpdaterApp:
         self.log_text.tag_config("success", foreground="#4CAF50")
         self.log_text.tag_config("warning", foreground="#FF9800")
         self.log_text.tag_config("error", foreground="#F44336")
-        self.log("Application started. (First time? Set your Server Folder in ⚙️ Settings.)", "info")
+        self.log("Application started. (First time? Press + at the top right to create your first Server.)", "info")
     
     def setup_server_tab(self):
         self.server_tab.columnconfigure(0, weight=1)
         self.server_tab.rowconfigure(2, weight=1)
         info_frame = ttk.LabelFrame(self.server_tab, text="Active Server Information", padding=10)
         info_frame.grid(row=0, column=0, sticky="ew", pady=5)
-        self.info_text = ttk.Label(info_frame, text="No Server selected — set the Server Folder in ⚙️ Settings.")
+        self.info_text = ttk.Label(info_frame, text="No Server yet — press + at the top right to create one.")
         self.info_text.pack(anchor="w")
         control_frame = ttk.LabelFrame(self.server_tab, text="Server Control", padding=10)
         control_frame.grid(row=1, column=0, sticky="ew", pady=5)
@@ -3247,10 +4093,10 @@ class BedrockUpdaterApp:
         if acc.is_running():
             messagebox.showwarning("Server Running", "Stop the Server before creating a new World.")
             return
-        name = simpledialog.askstring("Create New World", "Name of the new World:", parent=self.root)
-        if not name:
+        asked = self._ask_new_world()
+        if not asked:
             return
-        name = name.strip()
+        name, seed = asked
         if not name or any(c in name for c in '/\\:*?"<>|'):
             messagebox.showerror("Invalid Name", "The World name is empty or contains invalid characters.")
             return
@@ -3265,6 +4111,13 @@ class BedrockUpdaterApp:
             self.refresh_world_combo()
             self.refresh_worlds()
             if name not in existing:
+                # level-seed is read only when Bedrock generates a World, and stays in
+                # server.properties afterwards -- so it's always written, emptied when
+                # no seed was given, or the next new World would silently reuse it.
+                try:
+                    acc.write_properties({"level-seed": seed})
+                except Exception as e:
+                    messagebox.showerror("Error", f"Could not save the seed to server.properties:\n{e}")
                 # Soft link: offer to name the Server after the World, but only while it
                 # still carries the stock name (never overwrite a name the user chose).
                 props = acc.read_properties()
@@ -3276,13 +4129,45 @@ class BedrockUpdaterApp:
                         props["server-name"] = name
                         acc.write_properties(props)
                         self.update_server_info()
+                seed_note = f"Seed: {seed}\n" if seed else "Seed: random\n"
                 messagebox.showinfo("World Created",
-                    f"'{name}' is now the Active World.\n\n"
+                    f"'{name}' is now the Active World.\n{seed_note}\n"
                     "Bedrock will generate it the first time you start the Server.\n"
-                    "Taking you to 📝 Configuration — seed, gamemode and\n"
-                    "difficulty shape the new World on its first start.")
+                    "Taking you to 📝 Configuration — gamemode and difficulty\n"
+                    "shape the new World on its first start.")
                 self.notebook.select(self.properties_editor)
                 self.properties_editor.load_properties()
+
+    def _ask_new_world(self) -> Optional[Tuple[str, str]]:
+        """Name + optional seed for a new World; (name, seed) or None if cancelled."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Create New World")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        body = ttk.Frame(dlg, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="Name of the new World:").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=3)
+        name_var, seed_var = tk.StringVar(), tk.StringVar()
+        name_entry = ttk.Entry(body, textvariable=name_var, width=30)
+        name_entry.grid(row=0, column=1, sticky="w", pady=3)
+        ttk.Label(body, text="Seed (optional):").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=3)
+        seed_entry = ttk.Entry(body, textvariable=seed_var, width=30)
+        seed_entry.grid(row=1, column=1, sticky="w", pady=3)
+        self.create_tooltip(seed_entry, "The same seed gives the same landscape.\nLeave it empty for a random World.")
+        result = []
+        def ok(_=None):
+            if name_var.get().strip():
+                result.append((name_var.get().strip(), seed_var.get().strip()))
+                dlg.destroy()
+        btns = ttk.Frame(body); btns.grid(row=2, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="Create", style="Primary.TButton", command=ok).pack(side=tk.RIGHT, padx=(0, 6))
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        name_entry.focus_set()
+        dlg.grab_set()
+        self.root.wait_window(dlg)
+        return result[0] if result else None
 
     def rename_selected_world(self):
         acc = self.active_access
@@ -3729,7 +4614,7 @@ class BedrockUpdaterApp:
         # 🔄 Update (docs/V2-MAJORDOMO-PLAN.md, "Per-server settings leave the
         # Settings tab") -- they're per-Server, so they now live beside the
         # data they configure. This tab is app-level only; adding a Server is
-        # now the sidebar's ➕ Server.
+        # the top line's + (3.0).
         self.settings_tab.columnconfigure(0, weight=1)
         location_frame = ttk.LabelFrame(self.settings_tab, text="Current Server's Folder", padding=10)
         location_frame.grid(row=0, column=0, sticky="ew", pady=5)
@@ -3741,7 +4626,7 @@ class BedrockUpdaterApp:
         ttk.Button(location_frame, text="Browse", command=self.browse_server).grid(row=0, column=2, padx=5)
         self.server_status = ttk.Label(location_frame, text="", foreground="gray")
         self.server_status.grid(row=1, column=1, sticky="w", padx=5)
-        ttk.Label(location_frame, text="Relocates the selected Server's folder. To add another Server, use ➕ Server in the sidebar.",
+        ttk.Label(location_frame, text="Relocates the selected Server's folder. To add another Server, use + at the top right.",
                   font=("TkDefaultFont", 8), foreground="gray").grid(row=2, column=1, sticky="w", padx=5)
         ui_frame = ttk.LabelFrame(self.settings_tab, text="Interface Settings", padding=10)
         ui_frame.grid(row=1, column=0, sticky="ew", pady=5)
@@ -3872,8 +4757,9 @@ class BedrockUpdaterApp:
         self.apply_theme()
     
     def load_saved_state(self):
-        if self.config.get("last_zip_path"):
-            self.zip_entry.insert(0, self.config["last_zip_path"])
+        # last_zip_path is no longer restored: since 3.0 the Advanced ZIP is a
+        # one-off override, and a remembered old ZIP would hijack the Update
+        # button ("from the selected ZIP" instead of the latest release).
         if self.config.get("last_server_path"):
             self.server_entry.insert(0, self.config["last_server_path"])
             self.initialize_managers()
@@ -3898,6 +4784,8 @@ class BedrockUpdaterApp:
             self.update_server_info()
         elif current is self.players_tab:
             self.refresh_players_tab()
+        elif current is self.main_tab:
+            self.refresh_update_status()  # cached 10 min; "Check again" forces it
 
     def _build_context(self, profile_id: str, server_path: Path) -> "ServerService":
         """Construct a fresh ServerService for a profile and attach the GUI's
@@ -4242,7 +5130,6 @@ class BedrockUpdaterApp:
                 self.log(f"Stopping '{profiles.get(pid, {}).get('name', 'Server')}' before exit...", "info")
                 ctx.stop()
         self.config["window_geometry"] = self.root.geometry()
-        self.config["last_zip_path"] = self.zip_entry.get()
         self.config["last_server_path"] = self.server_entry.get()
         for item, var in self.preserve_vars.items():
             if item in self.config["preserve_items"]:
@@ -4292,10 +5179,12 @@ class BedrockUpdaterApp:
             p_server_path = Path(server_path)
             is_valid, msg = is_valid_bedrock_server(server_path)
             if is_valid:
+                self._server_folder_state = "valid"
                 version = detect_server_version(p_server_path)
                 self.server_status.config(text=f"✅ {msg} | Version: {version}", foreground="green")
                 self.update_server_info()
             elif p_server_path.exists() and p_server_path.is_dir() and not any(p_server_path.iterdir()):
+                self._server_folder_state = "empty"
                 self.server_status.config(text="❓ Folder is empty (Ready for Install)", foreground="blue")
                 valid = False
                 is_zip_valid, _ = is_valid_bedrock_zip(zip_path)
@@ -4304,17 +5193,19 @@ class BedrockUpdaterApp:
                         f"The folder '{p_server_path.name}' is empty.\n\nWould you like to install the Minecraft server here now?"):
                         self.is_first_install = True
                         self.is_updating = True
-                        self.update_button.config(state=tk.DISABLED)
+                        self._refresh_update_button()
                         self.log(f"Starting fresh installation to {server_path}...", "info")
                         threading.Thread(target=self.perform_update, daemon=True).start()
                         return
             else:
+                self._server_folder_state = "invalid"
                 self.server_status.config(text=f"❌ {msg}", foreground="red")
                 valid = False
         else:
+            self._server_folder_state = "none"
             self.server_status.config(text="")
             valid = False
-        self.update_button.config(state=tk.NORMAL if valid and not self.is_updating else tk.DISABLED)
+        self._refresh_update_button()
         if hasattr(self, 'properties_editor'):
             self.properties_editor.load_properties()
     
@@ -4325,8 +5216,7 @@ class BedrockUpdaterApp:
         # freezing the whole GUI on every Server-tab visit).
         acc = self.active_access
         if acc is None:
-            self.info_text.config(text="No Server selected — pick one in the sidebar, "
-                                       "or set a Server Folder in ⚙️ Settings.")
+            self.info_text.config(text="No Server yet — press + at the top right to create one.")
             return
         self.info_text.config(text="Loading Server info…")
 
@@ -4378,8 +5268,9 @@ class BedrockUpdaterApp:
         self.refresh_world_combo()
         self.refresh_backup_header(info.get("name", "Server"))  # reuse info -- avoid a second get_info() disk walk
         self.update_network_info()
-        if hasattr(self, 'update_installed_label'):
-            self.update_installed_label.config(text=f"Installed Bedrock Server Version: {installed}")
+        self._installed_version = installed
+        if hasattr(self, 'update_version_label'):
+            self._render_update_status()
     
     def get_preserve_list(self) -> List[str]:
         return [item for item, var in self.preserve_vars.items() if var.get()]
@@ -4409,15 +5300,24 @@ class BedrockUpdaterApp:
             return
         if self.is_updating:
             return
+        # A ZIP chosen under Advanced wins; otherwise install the latest release.
+        zip_text = self.zip_entry.get().strip()
+        use_zip = bool(zip_text) and is_valid_bedrock_zip(zip_text)[0]
+        release = None if use_zip else self._latest_release
+        if not use_zip and not release:
+            messagebox.showwarning("Update",
+                "The newest Bedrock Server Version isn't known yet.\n\n"
+                "Press 'Check again', or use Advanced to pick a ZIP or enter a version.")
+            return
+        what = Path(zip_text).name if use_zip else f"Bedrock Server Version {release['version']}"
         server_dir = Path(self.server_entry.get())
         is_first_install = not (server_dir / "server.properties").exists()
         if is_first_install:
             if not messagebox.askyesno("First-Time Install",
-                f"No existing server found in:\n{server_dir}\n\nWould you like to perform a fresh installation?"):
+                f"No existing server found in:\n{server_dir}\n\nInstall {what} there?"):
                 return
-            self.is_updating = True
-            self.update_button.config(state=tk.DISABLED)
-            threading.Thread(target=self.perform_update, daemon=True).start()
+            self.is_first_install = True
+            self._launch_update(zip_text if use_zip else None, release)
             return
         preserve = self.get_preserve_list()
         if "worlds" not in preserve:
@@ -4434,21 +5334,233 @@ class BedrockUpdaterApp:
             if self.config.get("auto_start_server_after_update", False):
                 running_note += "\nIt will be started again afterwards."
         if not messagebox.askyesno("Confirm",
-                f"Update server?\n{running_note}\nItems to preserve: {len(preserve)}\nBackup will be created first."):
+                f"Update this Server to {what}?\n{running_note}\nItems to preserve: {len(preserve)}\nBackup will be created first."):
             return
         # The actual stop happens inside perform_update's worker thread,
         # so the UI never freezes while the Server shuts down.
+        self._launch_update(zip_text if use_zip else None, release)
+
+    def _launch_update(self, zip_path: Optional[str], release: Optional[Dict[str, str]]):
+        """Run the update in a worker: download the release first if needed,
+        then the usual perform_update pipeline."""
         self.is_updating = True
-        self.update_button.config(state=tk.DISABLED)
-        threading.Thread(target=self.perform_update, daemon=True).start()
-    
-    def perform_update(self):
-        zip_path = Path(self.zip_entry.get())
+        self._refresh_update_button()
+
+        def worker():
+            path, version = zip_path, None
+            if release:
+                version = release["version"]
+                try:
+                    self.log(f"Downloading Bedrock Server Version {version}...", "info")
+                    dl_dir = Path(get_downloads_folder())
+                    dl_dir.mkdir(parents=True, exist_ok=True)
+                    path = download_bedrock_zip(
+                        release["url"], dl_dir,
+                        progress_callback=lambda p: self.root.after(
+                            0, lambda p=p: self.set_progress(p, f"Downloading {version}… {p:.0f}%")))
+                    self.log(f"Downloaded: {path}", "success")
+                except Exception as e:
+                    self.log(f"Download failed: {e}", "error")
+                    self.root.after(0, lambda e=e: messagebox.showerror(
+                        "Download failed",
+                        f"Could not download {version}:\n{e}\n\nTry again, or use Advanced."))
+                    self.is_updating = False
+                    self.is_first_install = False
+                    self.root.after(0, lambda: self.set_progress(0, "Download failed"))
+                    self.root.after(0, self._refresh_update_button)
+                    return
+            self.perform_update(path, version)
+        threading.Thread(target=worker, daemon=True).start()
+
+    # --- Update all Servers (plan §4) --------------------------------------
+    def _update_source(self):
+        """(zip_path or None, release or None, version or None): an Advanced ZIP
+        wins, as for the single Update; otherwise the latest release."""
+        zip_text = self.zip_entry.get().strip() if hasattr(self, 'zip_entry') else ""
+        if zip_text and is_valid_bedrock_zip(zip_text)[0]:
+            return zip_text, None, version_from_zip_name(Path(zip_text).name)
+        rel = self._latest_release
+        return None, rel, (rel["version"] if rel else None)
+
+    def _update_all_targets(self, version: Optional[str]) -> List[dict]:
+        """Every local Server in list order, with what 'Update all' would do:
+        action "update", "current" (already on that version) or "skip"
+        (reason in 'why'). Settings come from each Server's own profile; the
+        selected Server's from the tabs, exactly as its own Update would."""
+        active = self.config.get("active_profile")
+        out = []
+        for n, (pid, profile) in enumerate(self.config.get("server_profiles", {}).items(), 1):
+            path = Path(profile.get("path", ""))
+            if pid == active and not self.active_remote:
+                preserve = self.get_preserve_list()
+                settings = self.config
+            else:
+                items = profile.get("preserve_items") or DEFAULT_PRESERVE_ITEMS
+                preserve = [k for k, v in items.items() if v.get("enabled")]
+                settings = profile
+            t = {"number": n, "pid": pid, "path": path, "preserve": preserve,
+                 "compress": settings.get("compress_backups", False),
+                 "keep": settings.get("max_backups", 5) if settings.get("auto_cleanup_backups", True) else None,
+                 "world": "", "installed": "", "action": "update", "why": ""}
+            ok = bool(profile.get("path")) and is_valid_bedrock_server(str(path))[0]
+            if not ok or not (path / "server.properties").is_file():
+                t.update(action="skip", why="its folder isn't a complete Bedrock server")
+            else:
+                t["world"] = parse_server_properties(path / "server.properties").get("level-name", "")
+                t["installed"] = detect_server_version(path)
+                iv, lv = parse_version_tuple(t["installed"]), parse_version_tuple(version or "")
+                if "worlds" not in preserve:
+                    t.update(action="skip", why="'worlds' isn't ticked under What to back up — update it on its own")
+                elif iv and lv and lv <= iv:
+                    t["action"] = "current"
+            t["label"] = f"Server {n}: {t['world'] or profile.get('name') or 'Server'}"
+            out.append(t)
+        return out
+
+    def update_all_servers(self):
+        """One download, one confirmation listing every Server, then each one in
+        turn: a running Server is stopped first and started again afterwards; a
+        Server that fails is reported and doesn't stop the others."""
+        if self.is_updating or self.active_remote:
+            return
+        zip_path, release, version = self._update_source()
+        if not zip_path and not release:
+            messagebox.showwarning("Update all Servers",
+                "The newest Bedrock Server Version isn't known yet.\n\n"
+                "Press 'Check again', or use Advanced to pick a ZIP or enter a version.")
+            return
+        targets = self._update_all_targets(version)
+        todo = [t for t in targets if t["action"] == "update"]
+        if not todo:
+            messagebox.showinfo("Update all Servers", "All Servers are already up to date.")
+            return
+        what = Path(zip_path).name if zip_path else f"Bedrock Server Version {version}"
+        lines = []
+        for t in targets:
+            if t["action"] == "update":
+                ctx = self.contexts.get(t["pid"])
+                note = ""
+                if ctx and ctx.is_running():
+                    online = len(ctx.online_players())
+                    note = " — running: stopped, then started again"
+                    if online:
+                        note += f" ({online} player{'s' if online != 1 else ''} online!)"
+                lines.append(f"⬆ {t['label']} ({t['installed'] or 'version unknown'}){note}")
+            elif t["action"] == "current":
+                lines.append(f"✓ {t['label']} — already up to date")
+            else:
+                lines.append(f"– {t['label']} — skipped: {t['why']}")
+        if not messagebox.askyesno("Update all Servers",
+                f"Update {len(todo)} Server{'s' if len(todo) != 1 else ''} to {what}?\n\n"
+                + "\n".join(lines) +
+                "\n\nEach one is backed up first and updated in turn."):
+            return
+        self.is_updating = True
+        self._refresh_update_button()
+        threading.Thread(target=self._update_all_worker, args=(zip_path, release, version, todo),
+                         daemon=True).start()
+
+    def _update_all_worker(self, zip_path, release, version, todo):
+        ui = lambda fn: self.root.after(0, fn)
+        log = lambda msg, level="info": ui(lambda: self.log(msg, level))
+        results = []  # (label, ok, note, files_changed)
+        try:
+            if release:
+                try:
+                    log(f"Downloading Bedrock Server Version {version}...")
+                    dl_dir = Path(get_downloads_folder())
+                    dl_dir.mkdir(parents=True, exist_ok=True)
+                    zip_path = download_bedrock_zip(
+                        release["url"], dl_dir, progress_callback=lambda p: ui(
+                            lambda p=p: self.set_progress(p, f"Downloading {version}… {p:.0f}%")))
+                    log(f"Downloaded: {zip_path}", "success")
+                except Exception as e:
+                    log(f"Download failed: {e}", "error")
+                    ui(lambda e=e: messagebox.showerror("Download failed",
+                        f"Could not download {version}:\n{e}\n\nNo Server was changed."))
+                    ui(lambda: self.set_progress(0, "Download failed"))
+                    return
+            total = len(todo)
+            for k, t in enumerate(todo):
+                label = t["label"]
+                ctx = self._ensure_service(t["pid"])
+                if ctx is None:
+                    results.append((label, False, "its folder is gone", False))
+                    continue
+                log("=" * 50)
+                log(f"UPDATING {label} ({k + 1} of {total})")
+                share = lambda p, text=None, k=k, label=label: ui(lambda: self.set_progress(
+                    (k + p / 100) / total * 100,
+                    f"{label} ({k + 1} of {total}): {text}" if text else None))
+                was_running = ctx.is_running()
+                ctx.update_in_progress = True
+                try:
+                    if was_running:
+                        share(5, "Stopping Server...")
+                        log(f"Stopping {label} nicely before the update...")
+                        ctx.server_manager.stop()
+                    swap_server_files(t["path"], Path(zip_path), backup_manager=ctx.backup_manager,
+                                      preserve=t["preserve"], compress=t["compress"], version=version,
+                                      keep_backups=t["keep"], progress=share, log=log)
+                    ok, note, changed = True, "", True
+                except UpdateError as e:
+                    ok, changed = False, e.files_changed
+                    note = str(e) if changed else f"{e} (nothing was changed)"
+                    log(f"{label}: update FAILED: {note}", "error")
+                except Exception as e:  # e.g. the stop itself failed
+                    ok, changed, note = False, False, f"{e} (nothing was changed)"
+                    log(f"{label}: update FAILED: {note}", "error")
+                finally:
+                    ctx.update_in_progress = False
+                if was_running and (ok or not changed):
+                    log(f"Starting {label} again...")
+                    if not ctx.start():
+                        note = (note + "; " if note else "") + "it didn't start again — start it by hand"
+                        log(f"{label}: didn't start again after the update", "warning")
+                elif was_running:
+                    note += "; it was left stopped"
+                if ok:
+                    log(f"{label} updated to {version or Path(zip_path).name}", "success")
+                results.append((label, ok, note, changed))
+            ui(lambda: self.set_progress(100, "Complete!"))
+        finally:
+            def done():
+                self.is_updating = False
+                self._refresh_update_button()
+                self.validate_inputs()
+                self.refresh_backups()
+                self.refresh_sidebar()
+                if not results:
+                    return
+                good = [r for r in results if r[1]]
+                bad = [r for r in results if not r[1]]
+                msg = ""
+                if good:
+                    msg += f"Updated to {version or 'the new version'}:\n" + "\n".join(
+                        f"  ✓ {lbl}{' — ' + note if note else ''}" for lbl, _, note, _ in good)
+                if bad:
+                    msg += ("\n\n" if msg else "") + "Not updated:\n" + "\n".join(
+                        f"  ✗ {lbl} — {note}" for lbl, _, note, _ in bad)
+                    if any(changed for *_, changed in bad):
+                        msg += "\n\nA Server that was changed can be put back from its backup in 💾 Backups."
+                    messagebox.showwarning("Update all Servers", msg)
+                else:
+                    messagebox.showinfo("Update all Servers", msg)
+            ui(done)
+
+    def perform_update(self, zip_path=None, version: Optional[str] = None):
+        # zip_path/version come from the automatic flow (start_update downloads
+        # the latest release first); otherwise the Advanced ZIP field is used.
+        zip_path = Path(zip_path) if zip_path else Path(self.zip_entry.get())
+        version = version or version_from_zip_name(zip_path.name)
         server_path = Path(self.server_entry.get())
         preserve = self.get_preserve_list()
         start_time = time.time()
         is_fresh = getattr(self, 'is_first_install', False)
+        ctx = self.active_access if isinstance(self.active_access, ServerService) else None
         try:
+            if ctx:
+                ctx.update_in_progress = True
             self.log("=" * 50, "info")
             self.log("STARTING FRESH INSTALL" if is_fresh else "STARTING SERVER UPDATE", "info")
             self.log("=" * 50, "info")
@@ -4457,66 +5569,12 @@ class BedrockUpdaterApp:
                 self.log("Stopping the running Server nicely before the update...", "info")
                 self.server_manager.stop()
                 self.log("Server stopped.", "success")
-            backup_path = "N/A"
-            backed_up = []
-            if not is_fresh:
-                self.set_progress(10, "Creating backup...")
-                self.log("Creating backup...", "info")
-                success, backup_path, backed_up = self.backup_manager.create_backup(
-                    preserve, compress=self.config.get("compress_backups", False),
-                    progress_callback=lambda p: self.set_progress(10 + p * 0.2))
-                self.log(f"Backup created: {len(backed_up)} items", "success")
-                self.set_progress(35, "Removing old files...")
-                self.log("Removing old server files...", "info")
-                for item in server_path.iterdir():
-                    if item.is_dir(): shutil.rmtree(item)
-                    else: item.unlink()
-            else:
-                self.log("Fresh install detected: Skipping backup and cleanup.", "info")
-            self.set_progress(50, "Extracting server files...")
-            self.log(f"Extracting: {zip_path.name}", "info")
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                members = zf.namelist()
-                for i, member in enumerate(members):
-                    zf.extract(member, server_path)
-                    if i % 100 == 0:
-                        self.set_progress(50 + (i / len(members)) * 40)
-            self.log(f"Extracted {len(members)} files", "success")
-            # Keep the new version's stock server.properties before the restore
-            # below overwrites it with the user's old one, so any settings this
-            # Bedrock Server Version introduced can be merged back in afterwards.
-            fresh_props_text = None
-            if not is_fresh and "server.properties" in backed_up:
-                fresh_props = server_path / "server.properties"
-                if fresh_props.exists():
-                    with open(fresh_props, 'r') as f:
-                        fresh_props_text = f.read()
-            if not is_fresh:
-                self.set_progress(90, "Restoring preserved files...")
-                self.log("Restoring preserved files...", "info")
-                for i, item in enumerate(backed_up):
-                    source = backup_path / item if backup_path.is_dir() else None
-                    dest = server_path / item
-                    if backup_path.suffix == '.zip':
-                        with zipfile.ZipFile(backup_path, 'r') as zf:
-                            for name in zf.namelist():
-                                if name.startswith(item):
-                                    zf.extract(name, server_path)
-                    else:
-                        if dest.exists():
-                            if dest.is_dir(): shutil.rmtree(dest)
-                            else: dest.unlink()
-                        if source.is_dir(): shutil.copytree(source, dest)
-                        else: shutil.copy2(source, dest)
-            if fresh_props_text:
-                added = merge_new_server_properties(fresh_props_text, server_path / "server.properties")
-                for key, value in added:
-                    self.log(f"New setting in this Bedrock Server Version, added to server.properties: "
-                             f"{key}={value}", "info")
-            if not is_fresh and self.config.get("auto_cleanup_backups", True):
-                deleted = self.backup_manager.cleanup_old_backups(self.config.get("max_backups", 5))
-                if deleted > 0:
-                    self.log(f"Cleaned up {deleted} old backup(s)", "info")
+            swap_server_files(
+                server_path, zip_path, backup_manager=self.backup_manager, preserve=preserve,
+                compress=self.config.get("compress_backups", False), version=version, fresh=is_fresh,
+                keep_backups=(self.config.get("max_backups", 5)
+                              if self.config.get("auto_cleanup_backups", True) else None),
+                progress=self.set_progress, log=self.log)
             elapsed = time.time() - start_time
             self.set_progress(100, "Complete!")
             self.log("=" * 50, "info")
@@ -4536,10 +5594,12 @@ class BedrockUpdaterApp:
             self.set_progress(0, "Failed!")
             self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Process failed:\n{str(e)}"))
         finally:
+            if ctx:
+                ctx.update_in_progress = False
             self.is_updating = False
             self.is_first_install = False
-            self.root.after(0, lambda: self.update_button.config(state=tk.NORMAL))
-    
+            self.root.after(0, self._refresh_update_button)
+
     def _find_port_conflict(self) -> Optional[str]:
         """Name of another already-running profile bound to the same
         server-port, or None. See docs/V2-MAJORDOMO-PLAN.md, 'Multi-Server
@@ -4562,6 +5622,10 @@ class BedrockUpdaterApp:
             return
         if acc.is_running():
             return
+        if getattr(acc, "update_in_progress", False):
+            messagebox.showinfo("Being updated",
+                "This Server is being updated right now. Start it when the update has finished.")
+            return
         # Port-collision guard applies to local Servers (the host enforces its own).
         if not self.active_remote:
             conflict = self._find_port_conflict()
@@ -4578,7 +5642,7 @@ class BedrockUpdaterApp:
             try:
                 ok = a.start()
             except Exception as e:
-                self.root.after(0, lambda: self.log(f"Failed to start server: {e}", "error"))
+                self.root.after(0, lambda e=e: self.log(f"Failed to start server: {e}", "error"))
                 return
             self.root.after(0, lambda: self.log("Server started" if ok else "Failed to start server",
                                                  "success" if ok else "error"))
@@ -4600,7 +5664,7 @@ class BedrockUpdaterApp:
             try:
                 a.restart()
             except Exception as e:
-                self.root.after(0, lambda: self.log(f"Restart failed: {e}", "error"))
+                self.root.after(0, lambda e=e: self.log(f"Restart failed: {e}", "error"))
         threading.Thread(target=do_restart, daemon=True).start()
 
     def send_server_command(self, event=None):
@@ -4881,85 +5945,168 @@ class BedrockUpdaterApp:
         if self.server_entry.get():
             open_folder(Path(self.server_entry.get()))
     
-    def open_download_page(self):
-        if hasattr(self, 'last_manual_url') and self.last_manual_url:
-            self.log(f"Starting manual download for version {self.last_manual_version}...", "info")
-            self.download_updates(self.last_manual_url)
-        else:
-            self.log("No version selected. Opening official download page...", "warning")
-            webbrowser.open("https://www.minecraft.net/en-us/download/server/bedrock")
-    
-    def download_updates(self, url: str):
-        if not url:
-            messagebox.showwarning("Download", "No download URL available.")
+    # --- Update tab: latest release, status line, the one Update button -----
+    def refresh_update_status(self, force: bool = False):
+        """Ask Mojang for the newest release in the background (cached for 10
+        minutes unless forced), then redraw the Update tab's status line."""
+        if self._latest_check_running:
             return
-        downloads_path = Path(get_downloads_folder())
-        filename = url.split("/")[-1]
-        if not filename.endswith(".zip"):
-            filename = "bedrock-server-latest.zip"
-        target_path = downloads_path / filename
-        if not messagebox.askyesno("Download", f"Download latest server to:\n{target_path}?"):
+        fresh = self._latest_checked_at and time.time() - self._latest_checked_at < 600
+        if fresh and not force:
+            self._render_update_status()
             return
-        def perform_download():
-            try:
-                self.log(f"Starting download from: {url}", "info")
-                self.progress_label.config(text="Downloading update...")
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req) as response, open(target_path, 'wb') as out_file:
-                    total_size = int(response.info().get('Content-Length', 0))
-                    downloaded = 0
-                    while True:
-                        buffer = response.read(8192)
-                        if not buffer: break
-                        out_file.write(buffer)
-                        downloaded += len(buffer)
-                        if total_size > 0:
-                            percent = (downloaded / total_size) * 100
-                            self.root.after(0, lambda p=percent: self.progress_var.set(p))
-                self.root.after(0, lambda: self.on_download_complete(str(target_path)))
-            except Exception as e:
-                self.root.after(0, lambda e=e: self.log(f"Download failed: {str(e)}", "error"))
-                self.root.after(0, lambda: messagebox.showerror("Download Error", f"Failed to download: {e}"))
-        threading.Thread(target=perform_download, daemon=True).start()
+        self._latest_check_running = True
+        self._render_update_status()
 
-    def on_download_complete(self, file_path: str):
-        self.log(f"Download complete: {file_path}", "success")
-        self.zip_entry.delete(0, tk.END)
-        self.zip_entry.insert(0, file_path)
-        self.validate_inputs()
-        self.progress_var.set(100)
-        self.progress_label.config(text="Download finished!")
-        messagebox.showinfo("Download Complete", f"Latest server downloaded to:\n{file_path}\n\nIt has been automatically selected for update.")
-    
-    def manual_version_input(self):
-        self.log("Opening Minecraft Wiki for manual version check...")
-        webbrowser.open("https://minecraft.wiki/w/Bedrock_Dedicated_Server")
-        v = simpledialog.askstring("Manual Version Input",
-                                  "Please enter the latest version from the Wiki\n(e.g., 1.21.51.01):",
-                                  parent=self.root)
-        if v:
-            version = v.strip().lower().replace('v', '')
-            if sys.platform == "win32":
-                url = f"https://www.minecraft.net/bedrockdedicatedserver/bin-win/bedrock-server-{version}.zip"
+        def worker():
+            try:
+                rel, err = fetch_latest_bedrock_release(), None
+            except Exception as e:
+                rel, err = None, e
+            self.root.after(0, lambda: self._apply_latest_release(rel, err))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_latest_release(self, rel, err):
+        self._latest_check_running = False
+        self._latest_checked_at = time.time()
+        if rel:
+            self._latest_release, self._latest_error = rel, None
+        else:
+            self._latest_error = str(err)
+            self.log(f"Couldn't check for the latest Bedrock Server Version: {err}", "warning")
+        if self._announce_latest and rel:  # startup check: say it once in the Activity Log
+            self._announce_latest = False
+            iv, lv = parse_version_tuple(self._installed_version), parse_version_tuple(rel["version"])
+            if iv and lv > iv:
+                self.log(f"A newer Bedrock Server Version is available: {rel['version']} "
+                         f"(installed: {self._installed_version}). Update it in 🔄 Update.", "info")
+        self._render_update_status()
+
+    def _render_update_status(self):
+        if not hasattr(self, 'update_version_label'):
+            return
+        installed = self._installed_version or "—"
+        if self._latest_check_running:
+            latest, state, colour = "checking…", "Checking for the newest version…", "gray"
+        elif self._latest_release:
+            latest = self._latest_release["version"]
+            iv, lv = parse_version_tuple(installed), parse_version_tuple(latest)
+            if iv and lv and lv <= iv:
+                state, colour = "✓ Up to date", "green"
+            elif iv:
+                state, colour = "A newer version is available.", "#E65100"
             else:
-                url = f"https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-{version}.zip"
-            self.last_manual_url = url
-            self.last_manual_version = version
-            self.log(f"Version {version} selected. Ready to download.", "success")
-            messagebox.showinfo("Version Set", f"Version {version} is now active.\nClick 'Download Latest' to start the download.")
-    
-    def check_for_updates(self):
-        self.log("Checking for server updates...", "info")
-        messagebox.showinfo("Check Updates",
-            "To check for the latest Bedrock server version:\n\n"
-            "1. Click 'Download Latest' to open the official page\n"
-            "2. Compare the version there to your current version\n"
-            "3. Download if a newer version is available")
-        self.open_download_page()
-    
+                state, colour = "The installed version isn't known yet (it's read when the Server starts).", "gray"
+        elif self._latest_error:
+            latest = "unknown"
+            state, colour = "Couldn't reach Mojang to check — use Advanced to pick a ZIP or enter a version.", "#C62828"
+            self._show_update_advanced(True)
+        else:
+            latest, state, colour = "—", "", "gray"
+        self.update_version_label.config(text=f"Installed: {installed}   ·   Latest: {latest}")
+        self.update_state_label.config(text=state, foreground=colour)
+        self._refresh_update_button()
+
+    def _refresh_update_button(self):
+        """One place decides what the Update button says and whether it's enabled."""
+        if not hasattr(self, 'update_button'):
+            return
+        zip_text = self.zip_entry.get().strip() if hasattr(self, 'zip_entry') else ""
+        zip_ok = bool(zip_text) and is_valid_bedrock_zip(zip_text)[0]
+        rel = self._latest_release
+        fresh_install = self._server_folder_state == "empty"
+        if self.is_updating:
+            text, enabled = "Updating…", False
+        elif self.active_remote:
+            text, enabled = "Update (runs on the Machine itself)", False
+        elif self._server_folder_state not in ("valid", "empty"):
+            text, enabled = "Update", False
+        elif zip_ok:
+            text, enabled = f"🚀 {'Install' if fresh_install else 'Update'} from the selected ZIP", True
+        elif rel:
+            iv, lv = parse_version_tuple(self._installed_version), parse_version_tuple(rel["version"])
+            if fresh_install:
+                text, enabled = f"⬇ Install {rel['version']}", True
+            elif iv and lv <= iv:
+                text, enabled = "✓ Up to date", False
+            else:
+                text, enabled = f"⬆ Update to {rel['version']}", True
+        else:
+            text, enabled = "Update", False
+        self.update_button.config(text=text, state=tk.NORMAL if enabled else tk.DISABLED)
+        self._refresh_update_all_button()
+
+    def _refresh_update_all_button(self):
+        if not hasattr(self, 'update_all_button'):
+            return
+        if len(self.config.get("server_profiles", {})) < 2:
+            self.update_all_button.pack_forget()
+            return
+        if not self.update_all_button.winfo_manager():
+            self.update_all_button.pack(side=tk.LEFT, padx=(8, 0), after=self.update_button)
+        zip_path, release, version = self._update_source()
+        if self.is_updating or self.active_remote or not (zip_path or release):
+            text, enabled = "Update all Servers", False
+        else:
+            n = sum(t["action"] == "update" for t in self._update_all_targets(version))
+            if n:
+                text, enabled = f"⬆ Update all Servers ({n})", True
+            else:
+                text, enabled = "✓ All Servers up to date", False
+        self.update_all_button.config(text=text, state=tk.NORMAL if enabled else tk.DISABLED)
+
+    def _toggle_update_advanced(self):
+        self._show_update_advanced(not self.advanced_frame.winfo_ismapped())
+
+    def _show_update_advanced(self, show: bool):
+        if show:
+            self.advanced_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+            self.advanced_toggle.config(text="Advanced ▾")
+        else:
+            self.advanced_frame.grid_remove()
+            self.advanced_toggle.config(text="Advanced ▸")
+
+    def manual_version_input(self):
+        """Fallback for when the automatic check can't reach Mojang: look the
+        version up on the Wiki, type it, and the app downloads that ZIP into the
+        Advanced field."""
+        webbrowser.open("https://minecraft.wiki/w/Bedrock_Dedicated_Server")
+        v = simpledialog.askstring("Enter a version",
+                                   "Enter the Bedrock Server Version to download\n(e.g. 1.26.52.3):",
+                                   parent=self.root)
+        if not v:
+            return
+        version = v.strip().lower().lstrip('v')
+        folder = "bin-win" if sys.platform == "win32" else "bin-linux"
+        url = f"https://www.minecraft.net/bedrockdedicatedserver/{folder}/bedrock-server-{version}.zip"
+        self.log(f"Downloading Bedrock Server Version {version}...", "info")
+
+        def worker():
+            try:
+                dl_dir = Path(get_downloads_folder())
+                dl_dir.mkdir(parents=True, exist_ok=True)
+                path = download_bedrock_zip(url, dl_dir, progress_callback=lambda p: self.root.after(
+                    0, lambda p=p: self.set_progress(p, f"Downloading {version}… {p:.0f}%")))
+            except Exception as e:
+                self.log(f"Download failed for version {version}: {e}", "error")
+                self.root.after(0, lambda e=e: messagebox.showerror(
+                    "Download failed", f"Could not download version {version}:\n{e}\n\nCheck the number and try again."))
+                return
+
+            def done():
+                self.zip_entry.delete(0, tk.END)
+                self.zip_entry.insert(0, str(path))
+                self.set_progress(100, "Download finished")
+                self.log(f"Downloaded: {path}", "success")
+                self.validate_inputs()
+            self.root.after(0, done)
+        threading.Thread(target=worker, daemon=True).start()
+
     def check_for_updates_silent(self):
-        self.log("Hint: Check for server updates via Tools menu", "info")
+        """Startup check (Settings: 'Check for server updates on application
+        start'): mentions a newer version once in the Activity Log."""
+        self._announce_latest = True
+        self.refresh_update_status(force=True)
     
     def validate_server_files(self):
         if not self.server_entry.get():

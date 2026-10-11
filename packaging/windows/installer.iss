@@ -5,7 +5,7 @@
 ;   ISCC.exe /DMyAppVersion=1.2.3 packaging\windows\installer.iss
 
 #ifndef MyAppVersion
-  #define MyAppVersion "2.0.1"
+  #define MyAppVersion "3.0"
 #endif
 #define MyAppName "Bedrock Server Manager"
 #define MyAppPublisher "Tue Wincentz Boas"

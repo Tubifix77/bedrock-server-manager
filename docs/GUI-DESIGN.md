@@ -1,4 +1,4 @@
-# GUI design & terminology (as of 2.0 "Majordomo")
+# GUI design & terminology (as of 3.0 "Servers")
 
 The naming convention and tab layout agreed for this app. Use these words consistently —
 in the GUI, in docs, and when discussing changes. The point is to undo Bedrock's own
@@ -9,7 +9,7 @@ server/world mix-up (`server.properties` holds both `server-name` and `level-nam
 | Term | Means | Notes |
 |------|-------|-------|
 | **Bedrock Server Version** | The engine build (`bedrock_server` + libs + stock packs). | Mojang's own term. It's what **Update** swaps. Never call this "the server". |
-| **Server** | One configured install: name + port + config + its Worlds. | A Machine can have several, and several can run at once (different ports). The path field stays **"Server Folder"**. |
+| **Server** | One configured install: name + port + config + its Worlds. | A Machine can have several, and several can run at once (different ports). Shown as **Server 1, Server 2, …** — a display-only number (its position), not a name stored anywhere. Created by **+** into a hidden permanent folder `server-<id>`. The path field stays **"Server Folder"**. |
 | **World** | A save under `worlds/<name>/`, belonging to a Server. | A Server has many; switching never touches the others. |
 | **Active World** | The one World the Server loads — the `level-name` pointer. | Set via the dropdown on the Server tab. Changing it takes effect on next start. |
 | **backup** | A copy of a Server's Worlds + config (the preserve list). | Kept lowercase/unchanged — Mojang doesn't use "snapshot", and in Minecraft "snapshot" means Java dev builds. Backups are **per Server**, contain **all** Worlds, and restore **wholesale**; namespaced per-Server on disk since 2.0 so Servers sharing a parent folder can't mix backups. |
@@ -34,6 +34,37 @@ save format ratchets up to whatever version last ran it, and **won't load on old
 Shown as "Last Run On" in the Worlds list and on the Active World line in Active Server
 Information (with ⚠ when a World is newer than the installed Bedrock Server Version).
 
+## The top line: Server strip, + and − (3.0)
+
+```
+▶ Machines   [🟢 Server 1: Boas Familie Server] [⚪ Server 2: Kids Creative] [▾ 2 more]   [+] [−]
+```
+
+- **One button per Server** of the Machine in view: `Server N: <Active World>` (World name cut
+  to 22 characters + `…`, full name and players online in the tooltip), with a 🟢/⚪ running dot.
+  Clicking one selects that Server, exactly like the sidebar.
+- **Numbers are positions, not names.** Remove Server 2 and Server 3 *becomes* Server 2 — the
+  user insisted ("people like order"), and it's safe because nothing on disk carries the
+  number (folders are `server-<id>`, backups follow the folder).
+- **Overflow**: as many buttons as fit; the rest go into **▾ N more**. The selected Server always
+  stays visible (it takes the last visible slot). No wrapping to a second line.
+- **+ New Server**: name players see, game mode, then *A new World* (optional **seed**) or *A copy
+  of an existing World* (refused while that World's Server runs, so the copy is complete). The
+  newest Bedrock Server Version is downloaded and installed automatically — the user never picks
+  a ZIP. The first Server on a Machine gets port 19132 and LAN visibility; later ones get the next
+  free port pair (19134/19135, 19136/…) and `enable-lan-visibility=false`, because only the
+  first-started Server gets UDP 7551 (LAN discovery) — identical on Windows and Linux. The
+  confirmation tells players the address + port to add by hand. `allow-list=false` (stock
+  1.26.5x ships it on with an empty list). *Use an existing Bedrock folder instead…* covers
+  adopting an install made outside the app.
+- **− Remove a Server**: first a picker of *every* local Server, nothing preselected, Servers
+  with players online greyed out (`1 player online`); then a page listing exactly what goes
+  (folder, Worlds, its own backups — never an older shared backup folder), a warning if it's
+  running (it's stopped first), and **Delete permanently** unlocked only by typing the Active
+  World's name exactly. Refuses anything that isn't a Bedrock server folder (needs the engine
+  binary *and* `server.properties`, never a drive root or home) — such an entry is only taken
+  off the list. Disabled with a single Server.
+
 ## Sidebar (Machines → Servers, plus Fleet)
 
 A resizable left pane, replacing the old single-Server assumption:
@@ -46,7 +77,7 @@ A resizable left pane, replacing the old single-Server assumption:
 🖥 Boas-Laptop
    🟢 Boas Familie Server  ← remote Server, same tabs as local
 🖥🔴 Old-PC                 ← configured but unreachable right now
-[➕ Server] [➕ Machine]
+[➕ Machine]
 ```
 
 - **Collapsible, collapsed by default** (`sidebar_collapsed` in config, defaults `True`): a
@@ -66,21 +97,21 @@ A resizable left pane, replacing the old single-Server assumption:
 - **Selecting 🌐 Fleet** shows every Server across every Machine in one table — double-click a
   row to open it, or Start/Stop Selected without leaving the overview. This is the sidebar's
   root and the majordomo payoff: one screen to see the whole household.
-- **➕ Server** adds a genuinely new, independent local profile (its own defaults — unlike
-  Settings ▸ Browse, which only relocates the *currently selected* Server's folder).
-  **➕ Machine** opens Add Machine (name, host/IP, port, pairing token, Test connection).
+- **➕ Machine** opens Add Machine (name, host/IP, port, pairing token, Test connection).
+  Adding a Server moved to the top line's **+** in 3.0 (Settings ▸ Browse still only relocates
+  the *currently selected* Server's folder).
 
 ## Tab layout (order = daily use first)
 
 | # | Tab | Role | Holds |
 |---|-----|------|-------|
 | 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **🎲 Gamerules** dialog (reads the Active World's `level.dat`, applies live via `gamerule` commands — gamerules are per-World and are *not* `server.properties`) · **Active World dropdown** (existing Worlds only, plain names — the selected entry *is* the active World, no extra "(active)" tag; greys out while running with an inline "Not available until the running Server is stopped" hint — no static helper text while stopped) · network info · console (half height) — all of it works identically for a remote Server |
-| 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — where new users land after a fresh install; ends by jumping to Active Server Configuration) · Worlds list with sizes, dates, **Last Run On** — the Active World is marked **✅ ACTIVE**; a created-but-not-yet-generated Active World shows as an orange *"created on next start"* pending row · **Set as Active World** (if the Server runs: confirm → stop nicely → switch → start again) · Rename / Delete (refuse a running Server; Delete refuses the Active World) — remote-capable |
+| 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — one small dialog: name + optional **seed**; ends by jumping to Active Server Configuration) · Worlds list with sizes, dates, **Last Run On** — the Active World is marked **✅ ACTIVE**; a created-but-not-yet-generated Active World shows as an orange *"created on next start"* pending row · **Set as Active World** (if the Server runs: confirm → stop nicely → switch → start again) · Rename / Delete (refuse a running Server; Delete refuses the Active World) — remote-capable |
 | 3 | **👥 Players** | Manage people | **Access**: allowlist editor + "restrict joining" toggle (writes `allow-list`, live `allowlist on/off`; empty-list warning; Bedrock has **no blacklist**) · **Roles**: `permissions.json` visitor/member/operator (live `permission reload`) · **Game mode per player** (live `gamemode` command → mixed modes; warns if `force-gamemode=true`). Names+XUIDs auto-learned from join lines into `known_players` (tolerant regex — wording varies by version), with a **🔍 Scan console** button that re-reads the whole buffer and backfills missing allowlist XUIDs. Remote-capable. |
-| 4 | **📝 Configuration** | Edit the Server | Page header: **Active Server Configuration**. `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (seed, gamemode…). Remote-capable — a save round-trips to the host and back. |
+| 4 | **📝 Configuration** | Edit the Server | Page header: **Active Server Configuration**. `server.properties` editor (skips `level-name` — that's the Active World). Natural stop between creating a World and first start (gamemode, difficulty…). Remote-capable — a save round-trips to the host and back. |
 | 5 | **💾 Backups** | Per-Server backups | Header **names the Server** and where backups live · **Backup Settings** (max kept / compress / auto-cleanup — moved here in 2.0, it's per-Server) · **What to back up** checklist (the preserve list — same list updates preserve) · backup list (~⅓ height) · restore/delete. Remote-capable. |
-| 6 | **🔄 Update** | Swap the Bedrock Server Version | Installed version · ZIP picker · steps **1: Wiki Version → 2: Download Latest → 3: Update Server** · Dry Run / Open Folder (small, right) · **Update Settings** (auto-stop/auto-start — moved here in 2.0) · activity log. **Local-only, deliberately** — see Rationale. |
-| 7 | **⚙️ Settings** | App-level | **Current Server's Folder** (relocate only — adding a Server is ➕ Server in the sidebar) · **Remote Administration** (enable toggle, port, pairing token + copy/regenerate) · interface prefs · dark mode |
+| 6 | **🔄 Update** | Swap the Bedrock Server Version | `Installed: X · Latest: Y` (asked from Mojang, cached 10 min, 🔄 Check again) · one button: **⬆ Update to Y** / **⬇ Install Y** / **✓ Up to date** · **⬆ Update all Servers (N)** with two or more Servers · **Advanced ▸** (a specific ZIP, or *Enter a version…*; opens by itself if Mojang can't be reached) · Dry Run / Open Folder (small, right) · **Update Settings** (auto-stop/auto-start) · activity log. **Local-only, deliberately** — see Rationale. |
+| 7 | **⚙️ Settings** | App-level | **Current Server's Folder** (relocate only — adding a Server is **+** on the top line) · **Remote Administration** (enable toggle, port, pairing token + copy/regenerate) · interface prefs · dark mode |
 
 ## Rationale (decisions, so they don't get relitigated)
 
@@ -142,3 +173,19 @@ A resizable left pane, replacing the old single-Server assumption:
   rename/delete, players, configuration, backups) works identically local or remote.
 - **Opening a folder, or backup cleanup, stays local too** — they're filesystem actions on
   whichever machine you're sitting at; there's no "open Explorer on a computer across the LAN".
+- **Update needs no homework** (3.0): the app asks Mojang's download-links endpoint for the
+  current release (never a preview) instead of making the user look a version up on the Wiki,
+  type it, and pick a ZIP. The endpoint is undocumented, so the old manual way stays under
+  Advanced as the fallback. The installed version is recorded by the app itself
+  (`.bsm_bedrock_version` in the Server's folder, also refreshed from the engine's own
+  `Version:` startup line) because Mojang's files no longer carry it.
+- **Update all Servers** (3.0): one download, one confirmation listing every Server (⬆ to do /
+  ✓ already current / – skipped and why), then one Server at a time. A running Server is stopped
+  before its turn and started again after; a failure is reported and the others carry on — and
+  if it failed before anything was changed, it's started again too. A Server whose *What to back
+  up* lacks `worlds` is skipped (update it on its own, where that choice is confirmed). While a
+  Server's files are being swapped it can't be started, locally or by a remote Administrator.
+- **The seed is asked where a World is made** (3.0) — + and Worlds ▸ Create — and always
+  written to `level-seed`, emptied when none is given. `level-seed` is only read when Bedrock
+  generates a World but stays in `server.properties` afterwards, so leaving an old value would
+  silently give the next new World the same landscape.

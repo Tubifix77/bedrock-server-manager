@@ -3,7 +3,7 @@
 A comprehensive cross-platform GUI application for managing Minecraft Bedrock Dedicated
 Servers — one, or a whole fleet across your home network.
 
-![Version](https://img.shields.io/badge/version-2.0.1-blue)
+![Version](https://img.shields.io/badge/version-3.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -23,18 +23,22 @@ Prefer to run from source? See **Quick Start** below. Build/release details are 
 
 New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyday use.
 
-> **New in 2.0.1 "NetherNet":** works with Bedrock Server Version **1.26.5x**, where NetherNet is the
-> only transport players can connect over. If players got a *transport error* after updating, this
-> release fixes it — see [`CHANGES.md`](CHANGES.md).
+> **New in 3.0 "Servers":** several completely separate Servers on one computer — survival for the
+> grown-ups, creative for the kids — each with its own Worlds, players and backups. **+** creates one
+> and installs the newest Bedrock Dedicated Server by itself (with an optional World **seed**), **−**
+> removes one, and Update is a single button that knows the latest version, for one Server or all of
+> them. See [`CHANGES.md`](CHANGES.md).
 
 ---
 
 ## ✨ Features
 
-- **Manage one Server, or many** — a collapsible sidebar (hidden by default, so a single-Server
-  install looks just like the simple 1.x layout) lists every configured Server; several can run
-  simultaneously (on different ports), and a **🌐 Fleet overview** shows all of them across
-  every machine at a glance
+- **Several Servers on one computer** — `Server 1: <World>`, `Server 2: …` on the top line; **+**
+  downloads and installs a new one in a few clicks (new World with an optional seed, or a copy of
+  an existing one, its own port chosen for you), **−** removes one behind a typed confirmation.
+  Several can run at once, and a **🌐 Fleet overview** shows every Server across every machine
+- **Updates without homework** — the app asks Mojang for the newest Bedrock Server Version itself:
+  `Installed · Latest` and one **Update** button, or **Update all Servers** at once
 - **Remote administration over your LAN** — pair another PC (host/IP + a pairing token) and
   administer its Servers from every tab exactly like a local one: live console, start/stop,
   commands, worlds, players, configuration, backups. Or run a machine headless with `--agent`
@@ -102,6 +106,7 @@ Machine off your home network.
 | `docs/USER-GUIDE.md` | Everyday-use walkthrough |
 | `docs/GUI-DESIGN.md` | GUI layout & terminology reference |
 | `docs/V2-MAJORDOMO-PLAN.md` | 2.0 multi-Server/multi-Machine design + build history |
+| `docs/V3-SERVERS-PLAN.md` | 3.0 several-Servers-per-machine design |
 | `CHANGES.md` | Changelog |
 
 ---

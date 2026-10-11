@@ -12,13 +12,14 @@ code is genuinely cross-platform — every OS-specific operation branches on `sy
 "win32"`.
 
 All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py)
-(~5200 lines). The other files are a desktop launcher, packaging scripts, docs, and license.
+(~6450 lines). The other files are a desktop launcher, packaging scripts, docs, and license.
 The version shown to users is `APP_VERSION_LABEL` (`APP_VERSION` + `APP_RELEASE_NAME`, e.g.
 `v2.0.1 "NetherNet"`); the remote-admin wire protocol and `app_version` fields use the plain
 `APP_VERSION`. A release bump touches `APP_VERSION`/`APP_RELEASE_NAME`, the fallbacks in
 `packaging/` and `.github/workflows/release.yml`, the README badge, and CHANGES.md.
-Versions are **two-part from 2.1 on** (2.1, 2.2, … — no patch digit, whatever the size of the
-release); `main` is the only branch, and releases are cut by pushing a `v*` tag.
+Versions are **two-part after 2.0.1** (current: **3.0 "Servers"**, next 3.1, 3.2, … — no patch
+digit; the first number moves for a step as big *for users* as 1 → 2 was). `main` is the only
+branch, and releases are cut by pushing a `v*` tag. 3.0's design: `docs/V3-SERVERS-PLAN.md`.
 The same file also runs headless as a remote-administration host: `python3
 bedrock_updater_linux.py --agent [--config PATH] [--port N]` — no tkinter import required
 (guarded behind `TK_AVAILABLE`).
@@ -63,6 +64,15 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   (`is_valid_bedrock_server`, `is_valid_bedrock_zip`), `make_executable`, `open_folder`,
   `parse_server_properties`/`save_server_properties` (module-level so the headless agent can
   use them too — `BedrockUpdaterApp` has thin delegating methods of the same name), etc.
+  Since 3.0 also: `fetch_latest_bedrock_release()` (Mojang's undocumented download-links
+  endpoint — needs a browser User-Agent, never picks a preview) + `download_bedrock_zip()`
+  (`.part` then rename; reuses a valid ZIP already there); the installed version is the marker
+  file `VERSION_MARKER` (`.bsm_bedrock_version`) via `record_installed_version()` /
+  `detect_server_version()`; `create_server_folder()` / `find_free_server_port()` (the + wizard)
+  and `delete_server_files()` (the − dialog; refuses anything without an engine binary *and*
+  `server.properties`); and `swap_server_files()` — the destructive update core shared by the
+  single Update and Update all (raises `UpdateError`, whose `files_changed` says whether the
+  folder had been wiped yet).
 - **`BackupManager`** — create/list/restore/cleanup backups, namespaced per-Server since 2.0
   at `<server_parent>/bedrock_backups/<server_dir_name>/` (an older flat
   `<server_parent>/bedrock_backups/` is still read/counted for rollback safety, never moved).
@@ -76,7 +86,9 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   control, reads (`get_info`/`list_worlds`/`read_properties`/`read_gamerules`/`get_players`),
   writes (`write_properties`/`set_active_world`/`rename_world`/`delete_world`/allowlist/
   permission/gamerule/gamemode), and backups. Mutating process ops go through a per-Server
-  lock. This is the seam both the GUI and the remote-admin host operate through — `local click`
+  lock. `online_players()` comes from console join/leave lines (`PLAYER_JOIN_LEAVE_RE`; NetherNet
+  players are invisible to socket checks), and `update_in_progress` makes `start()`/`restart()`
+  refuse while Update swaps the files. This is the seam both the GUI and the remote-admin host operate through — `local click`
   and `remote click` hit the identical code and (in-process) the identical `ServerManager`.
 - **Remote administration (LAN-only)** — `FramedConnection` (JSON-Lines over a socket) +
   `compute_auth`/`verify_auth` (HMAC pairing-token challenge) are the shared wire primitives.
@@ -103,6 +115,13 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   instead (`show_notebook()`/`show_overview()`), rebuilt live by `build_fleet_overview()`/
   `build_machine_page()`. `self.contexts` is the per-profile `ServerService` registry — a
   Server keeps running there even when you're viewing a different one or the Fleet.
+  Since 3.0 the **top line** holds the Server strip (`_strip_entries()`/`_layout_strip()`,
+  `Server N: <Active World>`; N is display-only = position, renumbers after a removal; overflow
+  into "▾ N more" with the selection kept visible) plus **+** (`new_server_dialog()` →
+  `_create_server_async()`: auto-download, port 19132 + LAN for the first Server, the next free
+  port pair + `enable-lan-visibility=false` for later ones, optional seed) and **−**
+  (`remove_server_dialog()`: pick any Server, typed-name confirm). The Update tab is one
+  button driven by `_refresh_update_button()`, plus `update_all_servers()` with 2+ Servers.
   Tabs, in order: **Server** (home: Active Server Information, Active World dropdown,
   start/stop, 🎲 Gamerules dialog, console) / **Worlds** (create, rename, delete, per-World
   last-run version) / **Players** (allowlist + roles + per-player gamemode; names/XUIDs
@@ -138,7 +157,8 @@ The file is divided by `# ===` banner comments into these sections, top to botto
      queue was adopted for remote specifically because it's what let this code be verified with
      headless scripted tests (no `mainloop()` running) — keep using it there so that stays true.
 
-2. **The update pipeline is destructive.** `perform_update()` does:
+2. **The update pipeline is destructive.** `swap_server_files()` (called by `perform_update()`
+   for the selected Server, and by `_update_all_worker()` for each Server in turn) does:
    backup preserved items → **delete the entire server folder contents** → extract the new ZIP →
    restore preserved items from the just-made backup → **merge in any `server.properties` keys
    the new version's stock file has that the restored one lacks** (`merge_new_server_properties`
@@ -204,9 +224,13 @@ best-effort reads and socket cleanup; anything that hides a real failure should 
 
 - [`bedrock-server-manager.desktop`](bedrock-server-manager.desktop) has **hardcoded paths**
   (`/home/boas/Bedrock/...`) — they're user-specific and must be edited per install.
-- Update checking is manual: the app builds a guessed download URL from a user-entered version
-  string (`manual_version_input`) rather than querying an API, because minecraft.net has no
-  stable version endpoint.
+- The newest version comes from an **undocumented** Mojang endpoint (`BEDROCK_LINKS_API`, used
+  by Docker images and distro packages too). If it ever breaks, the Update tab says so and opens
+  Advanced, where `manual_version_input` (Wiki + typed version → guessed minecraft.net URL) is
+  the fallback — keep that path working.
+- **One LAN-visible Server per Machine**: only the first-started Server gets UDP 7551 (LAN
+  discovery), on Windows and Linux alike, so + gives later Servers
+  `enable-lan-visibility=false` and players add them by IP + port.
 - Remote administration is **LAN-only by design** — plaintext session after an HMAC-authenticated
   handshake, no TLS. Don't add internet-exposure features (port-forwarding helpers, etc.)
   without a real security redesign; the documented answer for reaching a Machine off-LAN is a

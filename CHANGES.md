@@ -4,9 +4,56 @@ All notable changes to this project will be documented here.
 
 ---
 
-## [Unreleased] — next release: 2.1
+## [3.0] "Servers" — 2026-10-11
+
+Several completely separate Servers on one Machine (say, survival for the grown-ups and
+creative for the kids), each with its own Worlds, settings, players and backups, and updating
+without hunting for ZIPs. Design: [docs/V3-SERVERS-PLAN.md](docs/V3-SERVERS-PLAN.md).
+
+### Added
+- **The Server strip** on the top line: `Server 1: <Active World>`, `Server 2: …`, with a green
+  dot for a running Server. Numbers are display-only and close up when a Server is removed.
+  When the line runs out of room, the rest go into **▾ N more**. The selected Server always stays
+  visible.
+- **＋ New Server**: name, game mode, a new World (with an optional **seed**) or a copy of an
+  existing one. The app downloads and installs the newest Bedrock Server Version itself. The first
+  Server gets port 19132 and shows up in Minecraft's LAN list; later ones get the next free port
+  (19134, 19136, …) and are added by IP and port, because only one Server per computer can be
+  LAN-visible. The allowlist starts off, so players can join right away.
+- **− Remove a Server**: pick any Server (nothing preselected; Servers with players online are
+  greyed out), see exactly what will be deleted (folder, Worlds, its own backups), then type the
+  World's name to unlock **Delete permanently**. A list entry pointing at something that isn't a
+  Bedrock server folder is only taken off the list, and nothing on disk is deleted.
+- **World seed.** Both ＋ New Server and Worlds ▸ Create take an optional seed. It's always
+  written to `level-seed`, emptied when none is given, so a seed meant for one World is never
+  silently reused for the next.
+- **One-button Update.** The app asks Mojang for the newest release itself:
+  `Installed: X · Latest: Y` and **⬆ Update to Y** (or **✓ Up to date**). A specific ZIP or a typed
+  version is still available under **Advanced**, and Advanced opens by itself if Mojang can't be
+  reached.
+- **Update all Servers** (with two or more Servers): one download and one confirmation listing
+  every Server. A running Server is stopped before its turn and started again afterwards. A Server
+  that fails is reported and doesn't stop the others. If it failed before anything was changed,
+  it's started again too.
+- The installed Bedrock Server Version is recorded (`.bsm_bedrock_version` in the Server's folder,
+  also read from the engine's own startup line), so it's no longer shown as "Unknown".
+- Who is online is tracked per Server from the console's join/leave lines.
+
+### Changed
+- The Advanced ZIP field is no longer remembered between sessions, because a remembered old ZIP
+  would take over the Update button.
+- A Server can't be started (locally or by a remote Administrator) while its files are being
+  updated.
+- First-run hints now point to **+** instead of "set the Server Folder in ⚙️ Settings", and the
+  sidebar's ➕ Server button is gone (+ on the top line replaces it; adopting an existing folder
+  is in the + window).
 
 ### Fixed
+- **Update on Windows could fail under a long install folder**: Bedrock's resource packs nest
+  deep enough to pass the 260-character path limit. Wipe, extract and restore now use long paths,
+  as backups already did.
+- A few error messages shown after a failure could themselves crash (`e` was gone by the time the
+  message ran): Add Machine, Start and Restart.
 - **Settings can no longer be lost to a crash or power cut.** The settings file was overwritten
   in place, so an interrupted save could leave it half-written. On the next start the app would
   then silently fall back to defaults and overwrite it, losing every Server profile, paired Machine
