@@ -20,6 +20,12 @@ All notable changes to this project will be documented here.
     `chat_logs/ChatLog_<date>.txt`. Mojang documents it only for Minecraft Education servers; the
     vanilla engine has the same code, but it hasn't been verified with real player chat yet.
 
+- **The game-mode buttons on 👥 Players now answer right there.** Under ⛏️ Survival /
+  🧱 Creative / 🗺️ Adventure, one line shows the Server's actual reply, instead of it going only
+  to the console on another tab: **✓ LivBoas17 is now in Creative** (green), **✗ LivBoas17 isn't
+  online…** (red), or that the Server didn't answer. It fades after 20 seconds, is cleared when
+  you switch Server, and works the same for remote Servers.
+
 ### Fixed
 - **Yellow hover tips could get stuck on screen**, most often over the Server 1 / Server 2
   buttons. The top line rebuilds its buttons whenever a Server starts or stops; a tip showing at

@@ -229,6 +229,10 @@ PLAYER_XUID_RE = re.compile(
 # Who's online right now, from the same console lines. (Network-level checks
 # can't count NetherNet players -- they don't show up as separate connections.)
 PLAYER_JOIN_LEAVE_RE = re.compile(r"Player\s+(connected|disconnected)\s*:\s*(.+?)\s*,\s*xuid:", re.IGNORECASE)
+# Game-mode button feedback (Players tab): how long to wait for the Server's
+# console answer, and how long the answer stays under the buttons.
+GAMEMODE_REPLY_TIMEOUT_MS = 4000
+GAMEMODE_FEEDBACK_SHOW_MS = 20000
 
 SERVER_SIGNATURE_FILES = ["bedrock_server.exe", "bedrock_server", "server.properties"]
 SERVER_EXECUTABLE = "bedrock_server.exe" if sys.platform == "win32" else "bedrock_server"
@@ -3373,6 +3377,7 @@ class BedrockUpdaterApp:
             for line in ev.get("data", {}).get("lines", []):
                 self.console_log(line)
                 self._check_transport_warning(line)
+                self._check_gamemode_reply(line)
         elif etype == "status":
             running = ev.get("data", {}).get("running", False)
             if viewing and self.active_access:
@@ -4299,10 +4304,17 @@ class BedrockUpdaterApp:
         ttk.Button(gm, text="⛏️ Survival", command=lambda: self.set_player_gamemode("survival")).grid(row=0, column=2, padx=2)
         ttk.Button(gm, text="🧱 Creative", command=lambda: self.set_player_gamemode("creative")).grid(row=0, column=3, padx=2)
         ttk.Button(gm, text="🗺️ Adventure", command=lambda: self.set_player_gamemode("adventure")).grid(row=0, column=4, padx=2)
+        # The Server's own answer to the last button press (_check_gamemode_reply):
+        # the console that shows it lives on another tab.
+        self.gm_feedback = ttk.Label(gm, text="", font=("TkDefaultFont", 10, "bold"))
+        self.gm_feedback.grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
         ttk.Label(gm, text="Applies live to an online player and sticks for them afterwards (Server must be running).",
-                  font=("TkDefaultFont", 8), foreground="gray").grid(row=1, column=0, columnspan=5, sticky="w", pady=(4, 0))
+                  font=("TkDefaultFont", 8), foreground="gray").grid(row=2, column=0, columnspan=5, sticky="w", pady=(4, 0))
         self.gm_force_warn = ttk.Label(gm, text="", font=("TkDefaultFont", 8), foreground="#F44336")
-        self.gm_force_warn.grid(row=2, column=0, columnspan=5, sticky="w")
+        self.gm_force_warn.grid(row=3, column=0, columnspan=5, sticky="w")
+        self._gm_pending = None     # {"name", "mode", "access", "timer"} while waiting for the reply
+        self._gm_clear_timer = None
+        self._gm_feedback_access = None
         foot = ttk.Frame(self.players_tab)
         foot.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         ttk.Button(foot, text="🔍 Scan console for players", command=self.scan_console_for_players).pack(side=tk.LEFT)
@@ -4343,6 +4355,9 @@ class BedrockUpdaterApp:
             self.allow_tree.delete(i)
         for i in self.perm_tree.get_children():
             self.perm_tree.delete(i)
+        if self._gm_feedback_access is not acc:  # another Server: its answer doesn't belong here
+            self._end_gamemode_wait()
+            self._show_gamemode_feedback("", "gray", clear=False)
         if acc is None:
             self.perm_player_combo.config(values=[])
             self.gm_player_combo.config(values=[])
@@ -4542,13 +4557,66 @@ class BedrockUpdaterApp:
         if not name:
             messagebox.showwarning("Players", "Pick or type a player name first.")
             return
+        self._end_gamemode_wait()
         try:
             acc.set_gamemode(name, mode)
         except Exception as e:
             messagebox.showerror("Players", str(e))
             return
         self.console_log(f'> gamemode {mode} "{name}"')
-        self.log(f"Requested {mode} for '{name}' — they must be online (check the console reply)", "info")
+        self._show_gamemode_feedback(f"⏳ Asking the Server to put {name} in {mode.capitalize()}…", "gray", clear=False)
+        self._gm_pending = {"name": name, "mode": mode, "access": acc,
+                            "timer": self.root.after(GAMEMODE_REPLY_TIMEOUT_MS, self._gamemode_reply_timeout)}
+
+    def _check_gamemode_reply(self, line: str):
+        """Turn the Server's console answer to the last game-mode button press into
+        one plain line under the buttons. Bedrock answers within about a second:
+        'No targets matched selector' when the player isn't online, otherwise a
+        line naming the player and their new game mode."""
+        p = self._gm_pending
+        if not p or self.active_access is not p["access"]:
+            return
+        low = line.lower()
+        name, mode = p["name"], p["mode"].capitalize()
+        if "no targets matched" in low:
+            text, colour, level = f"✗ {name} isn't online, so their game mode can't be changed right now.", "#C62828", "warning"
+        elif name.lower() in low and "mode" in low:
+            text, colour, level = f"✓ {name} is now in {mode}.", "#2E7D32", "success"
+        elif "syntax error" in low or "unknown command" in low:
+            reply = re.sub(r"^\[[^\]]*\]\s*", "", line).strip()
+            text, colour, level = f"✗ The Server said: {reply}", "#C62828", "warning"
+        else:
+            return  # some other console line; keep waiting
+        self._end_gamemode_wait()
+        self._show_gamemode_feedback(text, colour)
+        self.log(text.lstrip("✓✗ "), level)
+
+    def _gamemode_reply_timeout(self):
+        p = self._gm_pending
+        self._gm_pending = None
+        if p and self.active_access is p["access"]:
+            self._show_gamemode_feedback(
+                f"No answer from the Server about {p['name']} — see the console on 🎮 Server.", "#E65100")
+
+    def _end_gamemode_wait(self):
+        p, self._gm_pending = self._gm_pending, None
+        if p:
+            try:
+                self.root.after_cancel(p["timer"])
+            except tk.TclError:
+                pass
+
+    def _show_gamemode_feedback(self, text: str, colour: str, clear: bool = True):
+        """Show text under the game-mode buttons; a final answer fades after a
+        while so an old result isn't mistaken for a new one."""
+        if self._gm_clear_timer:
+            self.root.after_cancel(self._gm_clear_timer)
+            self._gm_clear_timer = None
+        self.gm_feedback.config(text=text, foreground=colour)
+        self._gm_feedback_access = self.active_access
+        if clear:
+            self._gm_clear_timer = self.root.after(
+                GAMEMODE_FEEDBACK_SHOW_MS, lambda: self._show_gamemode_feedback("", "gray", clear=False))
 
     def open_gamerules_dialog(self):
         acc = self.active_access
@@ -4831,6 +4899,7 @@ class BedrockUpdaterApp:
             self.console_log(line)
             self._scan_console_line(line)
             self._check_transport_warning(line)
+            self._check_gamemode_reply(line)
 
     def _check_transport_warning(self, line: str):
         """BDS 1.26.5x+ accepts players only over NetherNet and warns on the
