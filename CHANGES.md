@@ -20,6 +20,16 @@ All notable changes to this project will be documented here.
     `chat_logs/ChatLog_<date>.txt`. Mojang documents it only for Minecraft Education servers; the
     vanilla engine has the same code, but it hasn't been verified with real player chat yet.
 
+- **Every on/off setting in 📝 Configuration is now a checkbox** instead of a text field you had
+  to type `true` or `false` into — 18 of them in Mojang's stock file (allow cheats, online mode,
+  allowlist, LAN visibility, …), plus any other setting whose value is `true`/`false`. Free-text
+  settings that could hold those words (the Server's name, the seed) always stay text fields.
+  Rows keep their order from the file, and saving without changes leaves the file untouched.
+- **📍 Teleport on the 🎮 Server tab**, under the console's Quick buttons: pick a player, pick who
+  to move them to, press **Go**. It uses the console's `tp` command, so it works with cheats
+  off and needs no Operator role. The pickers list who's online (or every known player when
+  that isn't known), and the Server's answer shows next to the button: **✓ … was teleported
+  to …**, or **✗ … isn't online, so nobody was moved**.
 - **The game-mode buttons on 👥 Players now answer right there.** Under ⛏️ Survival /
   🧱 Creative / 🗺️ Adventure, one line shows the Server's actual reply, instead of it going only
   to the console on another tab: **✓ LivBoas17 is now in Creative** (green), **✗ LivBoas17 isn't

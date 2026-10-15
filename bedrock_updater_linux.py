@@ -229,10 +229,10 @@ PLAYER_XUID_RE = re.compile(
 # Who's online right now, from the same console lines. (Network-level checks
 # can't count NetherNet players -- they don't show up as separate connections.)
 PLAYER_JOIN_LEAVE_RE = re.compile(r"Player\s+(connected|disconnected)\s*:\s*(.+?)\s*,\s*xuid:", re.IGNORECASE)
-# Game-mode button feedback (Players tab): how long to wait for the Server's
-# console answer, and how long the answer stays under the buttons.
-GAMEMODE_REPLY_TIMEOUT_MS = 4000
-GAMEMODE_FEEDBACK_SHOW_MS = 20000
+# Game-mode and Teleport buttons: how long to wait for the Server's console
+# answer, and how long that answer stays next to the button.
+CONSOLE_REPLY_TIMEOUT_MS = 4000
+CONSOLE_REPLY_SHOW_MS = 20000
 
 SERVER_SIGNATURE_FILES = ["bedrock_server.exe", "bedrock_server", "server.properties"]
 SERVER_EXECUTABLE = "bedrock_server.exe" if sys.platform == "win32" else "bedrock_server"
@@ -3377,7 +3377,7 @@ class BedrockUpdaterApp:
             for line in ev.get("data", {}).get("lines", []):
                 self.console_log(line)
                 self._check_transport_warning(line)
-                self._check_gamemode_reply(line)
+                self._check_console_replies(line)
         elif etype == "status":
             running = ev.get("data", {}).get("running", False)
             if viewing and self.active_access:
@@ -3871,6 +3871,21 @@ class BedrockUpdaterApp:
         ttk.Label(quick_frame, text="Quick:").pack(side=tk.LEFT, padx=(0, 5))
         for cmd in ["list", "save hold", "save query", "save resume", "say Hello!"]:
             ttk.Button(quick_frame, text=cmd, command=lambda c=cmd: self.quick_command(c)).pack(side=tk.LEFT, padx=2)
+        # Teleport one player to another (console `tp`: works with cheats off).
+        tp_frame = ttk.Frame(console_frame)
+        tp_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        ttk.Label(tp_frame, text="📍 Teleport").pack(side=tk.LEFT, padx=(0, 5))
+        self.tp_from = ttk.Combobox(tp_frame, width=18)
+        self.tp_from.configure(postcommand=lambda: self.tp_from.configure(values=self._player_choices()))
+        self.tp_from.pack(side=tk.LEFT)
+        ttk.Label(tp_frame, text="to").pack(side=tk.LEFT, padx=5)
+        self.tp_to = ttk.Combobox(tp_frame, width=18)
+        self.tp_to.configure(postcommand=lambda: self.tp_to.configure(values=self._player_choices()))
+        self.tp_to.pack(side=tk.LEFT)
+        ttk.Button(tp_frame, text="Go", command=self.teleport_player).pack(side=tk.LEFT, padx=(6, 0))
+        self.tp_feedback = ttk.Label(tp_frame, text="", font=("TkDefaultFont", 10, "bold"))
+        self.tp_feedback.pack(side=tk.LEFT, padx=(10, 0))
+        self._reply_slot("teleport", self.tp_feedback)
     
     def setup_backup_tab(self):
         self.backup_tab.columnconfigure(0, weight=1)
@@ -4304,7 +4319,7 @@ class BedrockUpdaterApp:
         ttk.Button(gm, text="⛏️ Survival", command=lambda: self.set_player_gamemode("survival")).grid(row=0, column=2, padx=2)
         ttk.Button(gm, text="🧱 Creative", command=lambda: self.set_player_gamemode("creative")).grid(row=0, column=3, padx=2)
         ttk.Button(gm, text="🗺️ Adventure", command=lambda: self.set_player_gamemode("adventure")).grid(row=0, column=4, padx=2)
-        # The Server's own answer to the last button press (_check_gamemode_reply):
+        # The Server's own answer to the last button press (_check_console_replies):
         # the console that shows it lives on another tab.
         self.gm_feedback = ttk.Label(gm, text="", font=("TkDefaultFont", 10, "bold"))
         self.gm_feedback.grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
@@ -4312,9 +4327,7 @@ class BedrockUpdaterApp:
                   font=("TkDefaultFont", 8), foreground="gray").grid(row=2, column=0, columnspan=5, sticky="w", pady=(4, 0))
         self.gm_force_warn = ttk.Label(gm, text="", font=("TkDefaultFont", 8), foreground="#F44336")
         self.gm_force_warn.grid(row=3, column=0, columnspan=5, sticky="w")
-        self._gm_pending = None     # {"name", "mode", "access", "timer"} while waiting for the reply
-        self._gm_clear_timer = None
-        self._gm_feedback_access = None
+        self._reply_slot("gamemode", self.gm_feedback)
         foot = ttk.Frame(self.players_tab)
         foot.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         ttk.Button(foot, text="🔍 Scan console for players", command=self.scan_console_for_players).pack(side=tk.LEFT)
@@ -4355,9 +4368,7 @@ class BedrockUpdaterApp:
             self.allow_tree.delete(i)
         for i in self.perm_tree.get_children():
             self.perm_tree.delete(i)
-        if self._gm_feedback_access is not acc:  # another Server: its answer doesn't belong here
-            self._end_gamemode_wait()
-            self._show_gamemode_feedback("", "gray", clear=False)
+        self._clear_stale_replies()
         if acc is None:
             self.perm_player_combo.config(values=[])
             self.gm_player_combo.config(values=[])
@@ -4557,66 +4568,141 @@ class BedrockUpdaterApp:
         if not name:
             messagebox.showwarning("Players", "Pick or type a player name first.")
             return
-        self._end_gamemode_wait()
+        self._end_reply_wait("gamemode")
         try:
             acc.set_gamemode(name, mode)
         except Exception as e:
             messagebox.showerror("Players", str(e))
             return
         self.console_log(f'> gamemode {mode} "{name}"')
-        self._show_gamemode_feedback(f"⏳ Asking the Server to put {name} in {mode.capitalize()}…", "gray", clear=False)
-        self._gm_pending = {"name": name, "mode": mode, "access": acc,
-                            "timer": self.root.after(GAMEMODE_REPLY_TIMEOUT_MS, self._gamemode_reply_timeout)}
 
-    def _check_gamemode_reply(self, line: str):
-        """Turn the Server's console answer to the last game-mode button press into
-        one plain line under the buttons. Bedrock answers within about a second:
-        'No targets matched selector' when the player isn't online, otherwise a
-        line naming the player and their new game mode."""
-        p = self._gm_pending
-        if not p or self.active_access is not p["access"]:
+        def interpret(low, line, name=name, mode=mode.capitalize()):
+            # Bedrock: 'No targets matched selector' when the player isn't online,
+            # otherwise a line naming the player and their new game mode.
+            if "no targets matched" in low:
+                return f"✗ {name} isn't online, so their game mode can't be changed right now.", False
+            if name.lower() in low and "mode" in low:
+                return f"✓ {name} is now in {mode}.", True
+            return None
+        self._await_reply("gamemode", acc, f"⏳ Asking the Server to put {name} in {mode.capitalize()}…",
+                          interpret, f"No answer from the Server about {name} — see the console on 🎮 Server.")
+
+    def teleport_player(self):
+        """Server tab: move one player to another with the console's `tp`. Console
+        commands work whether or not allow-cheats is on (and need no Operator)."""
+        acc = self.active_access
+        a, b = self.tp_from.get().strip(), self.tp_to.get().strip()
+        self._end_reply_wait("teleport")
+        if acc is None or not acc.is_running():
+            self._show_reply("teleport", "Start the Server first — players can only be moved while they're playing.",
+                             "#E65100")
             return
+        if not a or not b:
+            self._show_reply("teleport", "Pick who to move, and who to move them to.", "#E65100")
+            return
+        if a.lower() == b.lower():
+            self._show_reply("teleport", "Pick two different players.", "#E65100")
+            return
+        cmd = f'tp "{a}" "{b}"'
+        try:
+            acc.send_command(cmd)
+        except Exception as e:
+            self._show_reply("teleport", f"✗ Couldn't send it: {e}", "#C62828")
+            return
+        self.console_log(f"> {cmd}")
+
+        def interpret(low, line, a=a, b=b):
+            if "no targets matched" in low:
+                return f"✗ {a} or {b} isn't online, so nobody was moved.", False
+            if "teleport" in low and a.lower() in low:
+                return f"✓ {a} was teleported to {b}.", True
+            return None
+        self._await_reply("teleport", acc, f"⏳ Moving {a} to {b}…", interpret,
+                          "No answer from the Server — see the console above.")
+
+    def _player_choices(self) -> List[str]:
+        """Names for the teleport pickers: who's online when this Server knows it
+        (a local Server, from join/leave lines), otherwise every known player."""
+        acc = self.active_access
+        try:
+            online = acc.online_players() if acc else None
+        except Exception:
+            online = None
+        return list(online) if online else list(self.gm_player_combo.cget("values"))
+
+    # --- The Server's console answer, shown next to the button that asked ---
+    # Used by the game-mode buttons (Players) and Teleport (Server): the reply
+    # otherwise only reaches the console, which may be on another tab -- and
+    # Bedrock's wording ("No targets matched selector") means little to a kid.
+    def _reply_slot(self, kind: str, label=None) -> dict:
+        slots = self.__dict__.setdefault("_replies", {})
+        if kind not in slots:
+            slots[kind] = {"label": label, "access": None, "wait": None, "fade": None}
+        elif label is not None:
+            slots[kind]["label"] = label
+        return slots[kind]
+
+    def _await_reply(self, kind: str, access, waiting_text: str, interpret, timeout_text: str):
+        slot = self._reply_slot(kind)
+        self._end_reply_wait(kind)
+        self._show_reply(kind, waiting_text, "gray", fade=False)
+        slot["wait"] = {"access": access, "interpret": interpret, "timeout_text": timeout_text,
+                        "since": time.monotonic(),
+                        "timer": self.root.after(CONSOLE_REPLY_TIMEOUT_MS, lambda: self._reply_timeout(kind))}
+
+    def _check_console_replies(self, line: str):
+        """Called with every console line of the selected Server (local or remote)."""
         low = line.lower()
-        name, mode = p["name"], p["mode"].capitalize()
-        if "no targets matched" in low:
-            text, colour, level = f"✗ {name} isn't online, so their game mode can't be changed right now.", "#C62828", "warning"
-        elif name.lower() in low and "mode" in low:
-            text, colour, level = f"✓ {name} is now in {mode}.", "#2E7D32", "success"
-        elif "syntax error" in low or "unknown command" in low:
-            reply = re.sub(r"^\[[^\]]*\]\s*", "", line).strip()
-            text, colour, level = f"✗ The Server said: {reply}", "#C62828", "warning"
-        else:
-            return  # some other console line; keep waiting
-        self._end_gamemode_wait()
-        self._show_gamemode_feedback(text, colour)
-        self.log(text.lstrip("✓✗ "), level)
+        waiting = sorted((s["wait"]["since"], k) for k, s in self.__dict__.get("_replies", {}).items() if s["wait"])
+        for _, kind in waiting:  # oldest question first: replies come back in order
+            wait = self._replies[kind]["wait"]
+            if self.active_access is not wait["access"]:
+                continue
+            result = wait["interpret"](low, line)
+            if result is None and ("syntax error" in low or "unknown command" in low):
+                result = ("✗ The Server said: " + re.sub(r"^\[[^\]]*\]\s*", "", line).strip(), False)
+            if result is None:
+                continue  # some other console line; keep waiting
+            text, ok = result
+            self._end_reply_wait(kind)
+            self._show_reply(kind, text, "#2E7D32" if ok else "#C62828")
+            self.log(text.lstrip("✓✗ "), "success" if ok else "warning")
+            return
 
-    def _gamemode_reply_timeout(self):
-        p = self._gm_pending
-        self._gm_pending = None
-        if p and self.active_access is p["access"]:
-            self._show_gamemode_feedback(
-                f"No answer from the Server about {p['name']} — see the console on 🎮 Server.", "#E65100")
+    def _reply_timeout(self, kind: str):
+        slot = self._reply_slot(kind)
+        wait, slot["wait"] = slot["wait"], None
+        if wait and self.active_access is wait["access"]:
+            self._show_reply(kind, wait["timeout_text"], "#E65100")
 
-    def _end_gamemode_wait(self):
-        p, self._gm_pending = self._gm_pending, None
-        if p:
+    def _end_reply_wait(self, kind: str):
+        slot = self._reply_slot(kind)
+        wait, slot["wait"] = slot["wait"], None
+        if wait:
             try:
-                self.root.after_cancel(p["timer"])
+                self.root.after_cancel(wait["timer"])
             except tk.TclError:
                 pass
 
-    def _show_gamemode_feedback(self, text: str, colour: str, clear: bool = True):
-        """Show text under the game-mode buttons; a final answer fades after a
+    def _show_reply(self, kind: str, text: str, colour: str, fade: bool = True):
+        """Show text in that button's answer line; a final answer fades after a
         while so an old result isn't mistaken for a new one."""
-        if self._gm_clear_timer:
-            self.root.after_cancel(self._gm_clear_timer)
-            self._gm_clear_timer = None
-        self.gm_feedback.config(text=text, foreground=colour)
-        self._gm_feedback_access = self.active_access
-        if clear:
-            self._gm_clear_timer = self.root.after(
-                GAMEMODE_FEEDBACK_SHOW_MS, lambda: self._show_gamemode_feedback("", "gray", clear=False))
+        slot = self._reply_slot(kind)
+        if slot["fade"]:
+            self.root.after_cancel(slot["fade"])
+            slot["fade"] = None
+        if slot["label"] is not None:
+            slot["label"].config(text=text, foreground=colour)
+        slot["access"] = self.active_access
+        if fade and text:
+            slot["fade"] = self.root.after(CONSOLE_REPLY_SHOW_MS, lambda: self._show_reply(kind, "", "gray", fade=False))
+
+    def _clear_stale_replies(self):
+        """After switching Server: an answer about another Server doesn't belong here."""
+        for kind, slot in self.__dict__.get("_replies", {}).items():
+            if slot["access"] is not self.active_access:
+                self._end_reply_wait(kind)
+                self._show_reply(kind, "", "gray", fade=False)
 
     def open_gamerules_dialog(self):
         acc = self.active_access
@@ -4899,7 +4985,7 @@ class BedrockUpdaterApp:
             self.console_log(line)
             self._scan_console_line(line)
             self._check_transport_warning(line)
-            self._check_gamemode_reply(line)
+            self._check_console_replies(line)
 
     def _check_transport_warning(self, line: str):
         """BDS 1.26.5x+ accepts players only over NetherNet and warns on the
@@ -6263,6 +6349,14 @@ class ServerPropertiesEditor(_TkFrameBase):
                                  "Experimental: documented by Mojang only for Minecraft Education servers."),
     }
 
+    # Free-text settings that could legitimately hold the word "true" or
+    # "false" (a Server named "true", a seed) -- never turned into a checkbox.
+    FREE_TEXT_KEYS = {"server-name", "level-seed", "server-ip", "script-debugger-passcode"}
+
+    @classmethod
+    def _is_on_off(cls, key: str, value: str) -> bool:
+        return key not in cls.FREE_TEXT_KEYS and value.strip().lower() in ("true", "false")
+
     def __init__(self, parent, app):
         super().__init__(parent, padding=10)
         self.app = app
@@ -6324,6 +6418,14 @@ class ServerPropertiesEditor(_TkFrameBase):
             if key.lower() == "level-name" or key in self.OPTIONAL_CHECKBOXES:
                 continue
             ttk.Label(self.scrollable_frame, text=key).grid(row=row_index, column=0, sticky="e", padx=5, pady=2)
+            if self._is_on_off(key, value):
+                # true/false settings are a checkbox: nothing to mistype.
+                var = tk.BooleanVar(value=value.strip().lower() == "true")
+                ttk.Checkbutton(self.scrollable_frame, variable=var).grid(
+                    row=row_index, column=1, sticky="w", padx=5, pady=2)
+                self.entries[key] = _CheckValue(var)
+                row_index += 1
+                continue
             entry = ttk.Entry(self.scrollable_frame, width=40)
             entry.insert(0, value)
             entry.grid(row=row_index, column=1, sticky="w", padx=5, pady=2)

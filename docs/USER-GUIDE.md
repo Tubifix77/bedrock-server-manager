@@ -33,10 +33,10 @@ Backups to manage it, Update when a new Bedrock Server Version comes out.
 
 | Tab | What you do there |
 |---|---|
-| 🎮 **Server** | The home screen: what's running, Start/Stop/Restart, the Active World dropdown, **🎲 Gamerules**, and the live console (type commands at the bottom, or use the Quick buttons). |
+| 🎮 **Server** | The home screen: what's running, Start/Stop/Restart, the Active World dropdown, **🎲 Gamerules**, and the live console (type commands at the bottom, or use the Quick buttons). **📍 Teleport** under the console moves one player to another — it works even with cheats off. |
 | 🌍 **Worlds** | Create (name + optional seed), rename, delete Worlds; see each one's size and which Bedrock Server Version it last ran on (a World won't load on an older engine than that). Switch the Active World here. |
 | 👥 **Players** | Allowlist (who's allowed to join), roles (visitor/member/operator), and per-player game mode (mix survival and creative players on one Server). Names are learned automatically as people join. |
-| 📝 **Configuration** | The full `server.properties` editor — everything except `level-name`, which lives on the Active World dropdown instead. At the top, three checkboxes for settings Mojang's file leaves out: **telemetry**, **Vibrant Visuals** and a **chat log** (experimental) — see below. |
+| 📝 **Configuration** | The full `server.properties` editor — everything except `level-name`, which lives on the Active World dropdown instead. On/off settings are checkboxes, the rest are text fields. At the top, three checkboxes for settings Mojang's file leaves out: **telemetry**, **Vibrant Visuals** and a **chat log** (experimental) — see below. |
 | 💾 **Backups** | What gets backed up (the preserve checklist), your backup policy (how many to keep, compress or not), and the backup list itself with restore/delete. |
 | 🔄 **Update** | Shows `Installed: … · Latest: …` and one button — **⬆ Update to …** or **✓ Up to date**. With several Servers, **Update all Servers** does them all in one go. Backs up your preserved items first, always. **Local machines only** — see below. |
 | ⚙️ **Settings** | App-level preferences, Remote Administration, and this Server's folder (to relocate it — adding a *new* Server is **+** at the top right, not this). |
