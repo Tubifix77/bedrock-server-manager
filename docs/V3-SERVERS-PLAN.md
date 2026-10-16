@@ -5,6 +5,10 @@
 > and it runs on the homelab. Differences from the draft: the installed version lives in a marker
 > file, not a config key (see *Config changes*), and the World **seed** was added to + and
 > Worlds ▸ Create on the user's request.
+> **Changed after 3.0** (see CHANGES.md, next release 3.1): + now has a *Show in Minecraft's LAN
+> list* box ticked for every new Server, not only the first (only the first-started gets UDP
+> 7551, so it's harmless and the Server running alone is listed); a ✏ Rename button joined + and
+> −; the sidebar, Fleet and Machine pages use the same `Server N: <Active World>` labels.
 > **Version:** 3.0 rather than 2.1 — 2.0 could technically run several Servers per machine,
 > but this is the first release where users can actually do it, a user-facing step as big as
 > 1 → 2 (more Machines) was. Decided with the user 2026-10-11.

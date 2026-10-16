@@ -899,6 +899,14 @@ def save_server_properties(filepath: Path, props: Dict[str, str]) -> bool:
         return False
 
 
+def _active_world_of(profile: dict) -> str:
+    """A Server's Active World (level-name), or "" if its folder can't be read."""
+    try:
+        return parse_server_properties(Path(profile.get("path", "")) / "server.properties").get("level-name", "")
+    except Exception:
+        return ""
+
+
 def merge_new_server_properties(fresh_text: str, target: Path) -> List[Tuple[str, str]]:
     """Bring settings introduced by a new Bedrock Server Version into a
     server.properties that an update just restored from backup.
@@ -1783,6 +1791,19 @@ class RemoteAdminHost:
         for c in clients:
             c.enqueue(message)
 
+    def watch_service(self, profile_id: str, service):
+        """Forward this Server's console and starts/stops to Administrators.
+        The host's own GUI calls it for every Server it builds, so a Server
+        started at the host is reported even if no Administrator has asked
+        about it yet (before, only Servers an Administrator had used were)."""
+        self._wire_service(profile_id, service)
+
+    def notify_servers_changed(self):
+        """Tell every connected Administrator the Server list changed (a Server
+        added, removed or renamed here) -- status changes already do this."""
+        self._broadcast({"type": "event", "event": "servers_changed",
+                         "data": {"servers": self.provider.remote_server_list()}})
+
     # --- event wiring (once per Server) ----------------------------------
     def _wire_service(self, profile_id: str, service):
         with self._wire_lock:
@@ -2529,6 +2550,9 @@ class BedrockUpdaterApp:
         self.server_remove_btn.pack(side=tk.RIGHT)
         self.server_add_btn = ttk.Button(top_bar, text="+", width=3, command=self.new_server_dialog)
         self.server_add_btn.pack(side=tk.RIGHT, padx=(0, 2))
+        self.server_rename_btn = ttk.Button(top_bar, text="✏", width=3, command=self.rename_server_dialog)
+        self.server_rename_btn.pack(side=tk.RIGHT, padx=(0, 2))
+        self.create_tooltip(self.server_rename_btn, "Rename the selected Server")
         self.server_strip = ttk.Frame(top_bar)
         self.server_strip.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
         self.server_strip.bind("<Configure>", self._on_strip_resize)
@@ -2640,33 +2664,37 @@ class BedrockUpdaterApp:
     # --- Top-line Server strip (3.0) -------------------------------------
     STRIP_WORLD_MAX = 22  # characters of the World name before "…"
 
-    def _strip_entries(self) -> List[dict]:
-        """The Servers of the Machine currently in view, in list order. Each:
-        key, number, world (full), running, online (count or None if unknown)."""
+    def _machine_server_entries(self, machine_id: Optional[str] = None) -> List[dict]:
+        """One Machine's Servers in list order -- this computer's when machine_id
+        is None. Each: key, number, world (Active World, full), running, online
+        (count, or None when unknown). The top line, the sidebar, the Fleet
+        overview and the Machine pages all label Servers from this, so a Server
+        is "Server N: <Active World>" everywhere."""
         entries = []
+        if machine_id:
+            servers = self._remote_state.get(machine_id, {}).get("servers", [])
+            for n, sv in enumerate(servers, 1):
+                # Hosts before 3.1 don't report "world"; their list name is the best we have.
+                entries.append({"key": f"r|{machine_id}|{sv['id']}", "number": n,
+                                "world": sv.get("world") or sv.get("name") or "Server",
+                                "running": bool(sv.get("running")), "online": None})
+            return entries
+        for n, (pid, profile) in enumerate(self.config.get("server_profiles", {}).items(), 1):
+            ctx = self.contexts.get(pid)
+            entries.append({"key": f"l|{pid}", "number": n,
+                            "world": _active_world_of(profile) or profile.get("name") or "Server",
+                            "running": bool(ctx and ctx.is_running()),
+                            "online": len(ctx.online_players()) if ctx else 0})
+        return entries
+
+    def _strip_entries(self) -> List[dict]:
+        """The Servers of the Machine currently in view (see _machine_server_entries)."""
         remote_mid = None
         if self.active_remote:
             remote_mid = self.active_remote[0]
         elif self._overview_kind and self._overview_kind[0] == "machine" and self._overview_kind[1] == "remote":
             remote_mid = self._overview_kind[2]
-        if remote_mid:
-            servers = self._remote_state.get(remote_mid, {}).get("servers", [])
-            for n, sv in enumerate(servers, 1):
-                entries.append({"key": f"r|{remote_mid}|{sv['id']}", "number": n,
-                                "world": sv.get("name") or "Server", "running": bool(sv.get("running")),
-                                "online": None})
-            return entries
-        for n, (pid, profile) in enumerate(self.config.get("server_profiles", {}).items(), 1):
-            world = ""
-            try:
-                world = parse_server_properties(Path(profile.get("path", "")) / "server.properties").get("level-name", "")
-            except Exception:
-                pass
-            ctx = self.contexts.get(pid)
-            entries.append({"key": f"l|{pid}", "number": n, "world": world or profile.get("name") or "Server",
-                            "running": bool(ctx and ctx.is_running()),
-                            "online": len(ctx.online_players()) if ctx else 0})
-        return entries
+        return self._machine_server_entries(remote_mid)
 
     def _strip_selected_key(self) -> str:
         if self._overview_kind:
@@ -2753,6 +2781,8 @@ class BedrockUpdaterApp:
         remote_view = bool(entries and entries[0]["key"].startswith("r|"))
         self.server_remove_btn.config(state=tk.NORMAL if (local_count > 1 and not remote_view) else tk.DISABLED)
         self.server_add_btn.config(state=tk.DISABLED if remote_view else tk.NORMAL)
+        # "✏" renames the selected local Server (its World, list name, server-name).
+        self.server_rename_btn.config(state=tk.NORMAL if selected.startswith("l|") else tk.DISABLED)
         self._refresh_update_all_button()  # the Server count may have changed
 
     def _on_strip_select(self, key: str):
@@ -2843,20 +2873,25 @@ class BedrockUpdaterApp:
 
         notes = ["The newest Bedrock Server Version is downloaded and installed in its own folder."]
         if profiles:
-            notes.append("Only one Server per computer can show up in Minecraft's LAN list, so players "
-                         "add this one under Servers → Add Server with this computer's IP and port "
-                         "(shown when it's ready).")
+            notes.append("Only one Server per computer can be in Minecraft's LAN list at a time — the one "
+                         "started first. Players add the others under Servers → Add Server with this "
+                         "computer's IP and port (shown when it's ready).")
         if sys.platform == "win32":
             notes.append("When it first starts, Windows will ask to allow bedrock_server.exe on the "
                          "network — choose Allow, or players can't connect.")
+        # Only the first-started Server gets UDP 7551 (LAN discovery), so a ticked box
+        # on several Servers is harmless: the others just aren't listed.
+        lan_var = tk.BooleanVar(value=True)
+        lan_box = ttk.Checkbutton(body, text="Show in Minecraft's LAN list", variable=lan_var)
+        lan_box.grid(row=4, column=1, sticky="w", pady=(6, 0))
         ttk.Label(body, text="\n".join("• " + n for n in notes), foreground="gray", wraplength=460,
-                  justify=tk.LEFT).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 6))
+                  justify=tk.LEFT).grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 6))
         status = ttk.Label(body, text="", foreground="gray", wraplength=460, justify=tk.LEFT)
-        status.grid(row=5, column=0, columnspan=2, sticky="w")
+        status.grid(row=6, column=0, columnspan=2, sticky="w")
         bar = ttk.Progressbar(body, maximum=100)
-        bar.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 8))
+        bar.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 8))
 
-        btns = ttk.Frame(body); btns.grid(row=7, column=0, columnspan=2, sticky="ew")
+        btns = ttk.Frame(body); btns.grid(row=8, column=0, columnspan=2, sticky="ew")
         existing = ttk.Button(btns, text="Use an existing Bedrock folder instead…", style="Small.TButton",
                               command=lambda: (dlg.destroy(), self.add_server_profile()))
         existing.pack(side=tk.LEFT)
@@ -2884,11 +2919,12 @@ class BedrockUpdaterApp:
                     set_status("That World's Server is running. Stop it first, so the copy is complete.", error=True)
                     return
                 copy_from = sources[idx][1]
-            for w in (name_entry, create, cancel, existing, src_combo, copy_rb, seed_entry):
+            for w in (name_entry, create, cancel, existing, src_combo, copy_rb, seed_entry, lan_box):
                 w.config(state=tk.DISABLED)
             dlg.protocol("WM_DELETE_WINDOW", lambda: None)  # don't close mid-install
             self._create_server_async(dlg, set_status, name, gm_var.get(), copy_from,
-                                      seed="" if copy_from else seed_var.get().strip())
+                                      seed="" if copy_from else seed_var.get().strip(),
+                                      lan_visible=lan_var.get())
 
         create.config(command=on_create)
         dlg.bind("<Return>", lambda e: on_create())
@@ -2897,7 +2933,7 @@ class BedrockUpdaterApp:
         dlg.grab_set()
 
     def _create_server_async(self, dlg, set_status, name: str, gamemode: str, copy_from: Optional[Path],
-                             seed: str = ""):
+                             seed: str = "", lan_visible: bool = True):
         profiles = self.config.get("server_profiles", {})
         profile_id = uuid.uuid4().hex[:8]
         # Next to Server 1's folder; a first-ever Server goes under the home folder.
@@ -2910,7 +2946,7 @@ class BedrockUpdaterApp:
             for key in ("server-port", "server-portv6"):
                 if props.get(key, "").isdigit():
                     used.add(int(props[key]))
-        lan_visible = not profiles  # only the first Server on this computer
+        first_server = not profiles  # gets Bedrock's standard port 19132
         ui = lambda fn: self.root.after(0, fn)
 
         def worker():
@@ -2923,7 +2959,7 @@ class BedrockUpdaterApp:
                 zpath = download_bedrock_zip(rel["url"], dl, progress_callback=lambda p: ui(
                     lambda p=p: set_status(f"Downloading {rel['version']}… {p:.0f}%", p * 0.8)))
                 # A first-ever Server gets Bedrock's standard port; later ones the next free pair.
-                port = find_free_server_port(used, start=19132 if lan_visible else NEW_SERVER_FIRST_PORT)
+                port = find_free_server_port(used, start=19132 if first_server else NEW_SERVER_FIRST_PORT)
                 ui(lambda: set_status(f"Installing {rel['version']}…", 85))
                 create_server_folder(zpath, target, server_name=name, gamemode=gamemode, port=port,
                                      lan_visible=lan_visible, world_name=name, copy_world_from=copy_from,
@@ -2954,6 +2990,7 @@ class BedrockUpdaterApp:
             "known_players": {},
         }
         save_config(self.config)
+        self._announce_servers_changed()
         try:
             dlg.grab_release(); dlg.destroy()
         except tk.TclError:
@@ -2962,12 +2999,126 @@ class BedrockUpdaterApp:
         self.notebook.select(self.properties_editor)  # review before the first start
         self.properties_editor.load_properties()
         self.log(f"New Server '{name}' created with Bedrock Server Version {version} in {target} (port {port}).", "success")
-        how = ("It shows up in Minecraft's LAN list." if lan_visible else
-               f"Players add it in Minecraft under Servers → Add Server:\n"
-               f"    Address: {get_local_ip()}\n    Port: {port}")
+        add_by_hand = (f"Players add it in Minecraft under Servers → Add Server:\n"
+                       f"    Address: {get_local_ip()}\n    Port: {port}")
+        others = len(self.config.get("server_profiles", {})) > 1
+        if lan_visible and not others:
+            how = "It shows up in Minecraft's LAN list."
+        elif lan_visible:
+            how = ("It shows up in Minecraft's LAN list when it's the first Server started on this "
+                   "computer (only one can be listed at a time). Otherwise:\n" + add_by_hand)
+        else:
+            how = add_by_hand
         messagebox.showinfo("Server created",
             f"'{name}' is ready (not started yet).\n\n{how}\n\n"
             "Review its settings here, then press Start on the 🎮 Server tab.")
+
+    def rename_server_dialog(self):
+        """'✏': rename the selected local Server in one place. The top line shows
+        its Active World, the sidebar/Fleet its list name, and players see
+        `server-name` -- one name for all three, with server-name optional."""
+        key = self._strip_selected_key()
+        if not key.startswith("l|") or self.active_remote or self.is_updating:
+            return
+        pid = key[2:]
+        profile = self.config.get("server_profiles", {}).get(pid)
+        acc = self.contexts.get(pid) or self._ensure_service(pid)
+        if profile is None or acc is None:
+            return
+        number = next((e["number"] for e in self._strip_entries() if e["key"] == key), 1)
+        try:
+            props = acc.read_properties()
+        except Exception:
+            props = {}
+        old_world = props.get("level-name", "") or profile.get("name", "")
+        old_players_name = props.get("server-name", "")
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Rename Server")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        body = ttk.Frame(dlg, padding=14)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text=f"Rename Server {number}", font=("TkDefaultFont", 12, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        ttk.Label(body, text="New name:").grid(row=1, column=0, sticky="e", padx=(0, 6))
+        name_var = tk.StringVar(value=old_world)
+        entry = ttk.Entry(body, textvariable=name_var, width=34)
+        entry.grid(row=1, column=1, sticky="w")
+        # Follow along by default only while players still see the stock name or
+        # the old one -- a server-name the user chose on purpose is left alone.
+        players_var = tk.BooleanVar(value=old_players_name.strip() in ("", "Dedicated Server", old_world,
+                                                                      profile.get("name", "")))
+        ttk.Checkbutton(body, variable=players_var,
+                        text=f"Also the name players see in their server list (now: “{old_players_name or '—'}”)").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        status = ttk.Label(body, text="", foreground="#E65100", wraplength=420, justify=tk.LEFT)
+        status.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        btns = ttk.Frame(body)
+        btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
+        rename_btn = ttk.Button(btns, text="Rename", style="Primary.TButton")
+        rename_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        if acc.is_running():
+            # Its World folder is renamed too, which can't happen under a running engine.
+            rename_btn.config(state=tk.DISABLED)
+            status.config(text="Stop this Server first — its World folder is renamed too.")
+
+        def do_rename(_=None):
+            if str(rename_btn.cget("state")) == "disabled":
+                return
+            new = name_var.get().strip()
+            if not new or any(c in new for c in ';/\\:*?"<>|'):
+                status.config(text="Use a name without ; / \\ : * ? \" < > |", foreground="#C62828")
+                return
+            if acc.is_running():
+                status.config(text="Stop this Server first — its World folder is renamed too.", foreground="#E65100")
+                return
+            try:
+                self._rename_server(pid, acc, old_world, new, players_var.get())
+            except Exception as e:
+                status.config(text=f"Couldn't rename it: {e}", foreground="#C62828")
+                return
+            dlg.destroy()
+
+        rename_btn.config(command=do_rename)
+        dlg.bind("<Return>", do_rename)
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        entry.focus_set(); entry.select_range(0, tk.END)
+        dlg.grab_set()
+
+    def _rename_server(self, pid: str, acc, old_world: str, new: str, players_too: bool):
+        """Rename the World (folder + level-name), the list name and, optionally,
+        server-name. Raises with a plain message if the World can't be renamed."""
+        existing = {w["name"] for w in acc.list_worlds()}
+        if new != old_world:
+            clash = next((w for w in existing if w.lower() == new.lower() and w.lower() != old_world.lower()), None)
+            if clash:
+                raise ValueError(f"this Server already has a World called “{clash}”")
+            if old_world in existing:
+                if new.lower() == old_world.lower():
+                    # Only the capitals change: go through a temporary name, since
+                    # Windows sees "Kids" and "kids" as the same folder.
+                    tmp = f"{old_world}.renaming"
+                    if not (acc.rename_world(old_world, tmp) and acc.rename_world(tmp, new)):
+                        raise OSError("the World folder couldn't be renamed")
+                elif not acc.rename_world(old_world, new):
+                    raise OSError("the World folder couldn't be renamed")
+            else:
+                acc.set_active_world(new)  # not generated yet: only the pointer exists
+        if players_too:
+            acc.write_properties({"server-name": new})
+        self.config["server_profiles"][pid]["name"] = new
+        save_config(self.config)
+        self._announce_servers_changed()
+        self.log(f"Renamed Server '{old_world}' to '{new}'" + (" (players see the new name too)" if players_too else ""),
+                 "success")
+        if self.config.get("active_profile") == pid and not self.active_remote:
+            self.refresh_worlds()
+            self.refresh_world_combo()
+            self.update_server_info()
+            if hasattr(self, 'properties_editor') and not self.properties_editor.has_unsaved_changes():
+                self.properties_editor.load_properties()
+        self.refresh_sidebar()
 
     def remove_server_dialog(self):
         """'−': pick ANY local Server (nothing preselected), then a typed-name
@@ -3106,6 +3257,7 @@ class BedrockUpdaterApp:
             if first:
                 self._switch_to_profile(first)
         save_config(self.config)
+        self._announce_servers_changed()
         self.refresh_sidebar()
         try:
             dlg.grab_release(); dlg.destroy()
@@ -3137,11 +3289,9 @@ class BedrockUpdaterApp:
             local_node = self.sidebar_tree.insert("", tk.END, iid="machine:local",
                                                    text="🖥 This computer", open=True)
             active_id = self.config.get("active_profile")
-            for pid, profile in self.config.get("server_profiles", {}).items():
-                running = pid in self.contexts and self.contexts[pid].is_running()
-                dot = "🟢" if running else "⚪"
-                self.sidebar_tree.insert(local_node, tk.END, iid=f"profile:{pid}",
-                                         text=f"{dot} {profile.get('name') or 'Server'}")
+            for e in self._machine_server_entries():
+                self.sidebar_tree.insert(local_node, tk.END, iid=f"profile:{e['key'][2:]}",
+                                         text=self._strip_label(e, short=False))
             # Remote Machines + their Servers.
             for machine in self.config.get("machines", []):
                 mid = machine.get("id")
@@ -3155,10 +3305,10 @@ class BedrockUpdaterApp:
                     self.sidebar_tree.insert(mnode, tk.END, iid=f"rinfo:{mid}",
                                              text="   (connecting…)")
                     continue
-                for sv in st.get("servers", []):
-                    dot = "🟢" if sv.get("running") else "⚪"
-                    self.sidebar_tree.insert(mnode, tk.END, iid=f"rprofile:{mid}:{sv['id']}",
-                                             text=f"{dot} {sv.get('name', 'Server')}")
+                for e in self._machine_server_entries(mid):
+                    sid = e["key"].split("|", 2)[2]
+                    self.sidebar_tree.insert(mnode, tk.END, iid=f"rprofile:{mid}:{sid}",
+                                             text=self._strip_label(e, short=False))
             # Restore selection highlight.
             sel_iid = None
             if self.active_remote:
@@ -3222,10 +3372,13 @@ class BedrockUpdaterApp:
             return
 
         # The Fleet root: every Server across every Machine.
+        # (Each overview also redraws the top line: no single Server is selected
+        # there, and a remote Machine's page shows that Machine's Servers.)
         if iid == "fleet":
             self._overview_kind = ("fleet",)
             self.show_overview()
             self.build_fleet_overview()
+            self._schedule_strip_layout()
             return
 
         # "This computer" -- a local Machine page.
@@ -3233,6 +3386,7 @@ class BedrockUpdaterApp:
             self._overview_kind = ("machine", "local", "local")
             self.show_overview()
             self.build_machine_page("local", "local")
+            self._schedule_strip_layout()
             return
 
         # A remote Machine node, or its "(connecting…)" placeholder.
@@ -3241,6 +3395,7 @@ class BedrockUpdaterApp:
             self._overview_kind = ("machine", "remote", mid)
             self.show_overview()
             self.build_machine_page("remote", mid)
+            self._schedule_strip_layout()
             return
 
     def _confirm_leave_unsaved(self) -> bool:
@@ -3546,10 +3701,10 @@ class BedrockUpdaterApp:
         every Server, optionally filtered to one Machine ('local' or a
         machine_id). row_info is what _fleet_access_for_row() consumes."""
         if only_machine in (None, "local"):
-            for pid, profile in self.config.get("server_profiles", {}).items():
-                running = pid in self.contexts and self.contexts[pid].is_running()
-                yield (f"floc:{pid}", "🖥 This computer", profile.get("name") or "Server",
-                       running, ("local", pid))
+            for e in self._machine_server_entries():
+                pid = e["key"][2:]
+                yield (f"floc:{pid}", "🖥 This computer", f"Server {e['number']}: {e['world']}",
+                       e["running"], ("local", pid))
         if only_machine != "local":
             for machine in self.config.get("machines", []):
                 mid = machine.get("id")
@@ -3560,9 +3715,10 @@ class BedrockUpdaterApp:
                 if not st.get("connected"):
                     yield (f"frem:{mid}:_", mlabel, "(not connected)", False, None)
                     continue
-                for sv in st.get("servers", []):
-                    yield (f"frem:{mid}:{sv['id']}", mlabel, sv.get("name") or "Server",
-                           bool(sv.get("running")), ("remote", mid, sv["id"]))
+                for e in self._machine_server_entries(mid):
+                    sid = e["key"].split("|", 2)[2]
+                    yield (f"frem:{mid}:{sid}", mlabel, f"Server {e['number']}: {e['world']}",
+                           e["running"], ("remote", mid, sid))
 
     def _build_server_list_tree(self, parent, show_machine_column: bool):
         columns = ("machine", "server", "status") if show_machine_column else ("server", "status")
@@ -3649,14 +3805,31 @@ class BedrockUpdaterApp:
             if ctx is None and profile.get("path") and Path(profile["path"]).exists():
                 ctx = self._build_context(pid, Path(profile["path"]))
                 self.contexts[pid] = ctx
-            return ctx, profile.get("name", "Server")
+            return ctx, self._server_display_name(None, f"l|{pid}")
         _, mid, sid = info
         conn = self.connections.get(mid)
         if conn is None or not conn.is_connected():
             return None, None
-        name = next((sv.get("name") for sv in self._remote_state.get(mid, {}).get("servers", [])
-                    if sv.get("id") == sid), "Server")
-        return RemoteServerAccess(conn, sid), name
+        acc = RemoteServerAccess(conn, sid)
+        # A fresh access object assumes "stopped"; without the Machine's last
+        # report, Stop Selected on a running remote Server silently did nothing.
+        acc.note_status(self._remote_server_running(mid, sid))
+        return acc, self._server_display_name(mid, f"r|{mid}|{sid}")
+
+    def _announce_servers_changed(self):
+        """A Server was added, removed or renamed here: tell connected Administrators
+        now, instead of at the next start/stop."""
+        host = getattr(self, "remote_host", None)
+        if host is not None and host.is_running():
+            try:
+                host.notify_servers_changed()
+            except Exception:
+                _LOG.exception("Couldn't tell Administrators about the changed Server list")
+
+    def _server_display_name(self, machine_id: Optional[str], key: str) -> str:
+        """'Server N: <Active World>' for confirmations, as on the top line."""
+        e = next((e for e in self._machine_server_entries(machine_id) if e["key"] == key), None)
+        return f"Server {e['number']}: {e['world']}" if e else "Server"
 
     def _fleet_row_double_click(self, event=None):
         tree = self._fleet_tree
@@ -4975,6 +5148,8 @@ class BedrockUpdaterApp:
             lambda line, pid=profile_id: self.root.after(0, lambda: self._on_service_output(pid, line)))
         service.server_manager.add_status_callback(
             lambda status, pid=profile_id: self.root.after(0, lambda: self._on_service_status(pid, status)))
+        if self.remote_host is not None and self.remote_host.is_running():
+            self.remote_host.watch_service(profile_id, service)
         return service
 
     def _on_service_output(self, profile_id: str, line: str):
@@ -5092,6 +5267,7 @@ class BedrockUpdaterApp:
         for pid, profile in self.config.get("server_profiles", {}).items():
             svc = self.contexts.get(pid)
             out.append({"id": pid, "name": profile.get("name", "Server"),
+                        "world": _active_world_of(profile),
                         "running": svc.is_running() if svc else False})
         return out
 
@@ -5128,6 +5304,10 @@ class BedrockUpdaterApp:
                     self, port=port,
                     log=lambda m: self.root.after(0, lambda: self.log(m, "info")))
                 self.remote_host.start()
+                # Report starts/stops of every Server to Administrators from the
+                # beginning -- not only once one of them has touched that Server.
+                for pid, ctx in list(self.contexts.items()):
+                    self.remote_host.watch_service(pid, ctx)
             except Exception as e:
                 self.remote_enabled_var.set(False)
                 ra["enabled"] = False
@@ -6507,6 +6687,7 @@ class AgentApp:
         for pid, profile in self.config.get("server_profiles", {}).items():
             svc = self.services.get(pid)
             out.append({"id": pid, "name": profile.get("name", "Server"),
+                        "world": _active_world_of(profile),
                         "running": svc.is_running() if svc else False})
         return out
 

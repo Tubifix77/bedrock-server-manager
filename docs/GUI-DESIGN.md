@@ -37,7 +37,7 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
 ## The top line: Server strip, + and − (3.0)
 
 ```
-▶ Machines   [🟢 Server 1: Boas Familie Server] [⚪ Server 2: Kids Creative] [▾ 2 more]   [+] [−]
+▶ Machines   [🟢 Server 1: Boas Familie Server] [⚪ Server 2: Kids Creative] [▾ 2 more]   [✏] [+] [−]
 ```
 
 - **One button per Server** of the Machine in view: `Server N: <Active World>` (World name cut
@@ -51,12 +51,19 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
 - **+ New Server**: name players see, game mode, then *A new World* (optional **seed**) or *A copy
   of an existing World* (refused while that World's Server runs, so the copy is complete). The
   newest Bedrock Server Version is downloaded and installed automatically — the user never picks
-  a ZIP. The first Server on a Machine gets port 19132 and LAN visibility; later ones get the next
-  free port pair (19134/19135, 19136/…) and `enable-lan-visibility=false`, because only the
-  first-started Server gets UDP 7551 (LAN discovery) — identical on Windows and Linux. The
-  confirmation tells players the address + port to add by hand. `allow-list=false` (stock
+  a ZIP. The first Server on a Machine gets port 19132; later ones the next free port pair
+  (19134/19135, 19136/…). **☑ Show in Minecraft's LAN list** (`enable-lan-visibility`) is ticked
+  by default for every new Server: only the first-*started* Server gets UDP 7551 (LAN discovery)
+  — identical on Windows and Linux — so ticking it on several is harmless (the others just
+  aren't listed), and it means whichever Server is running alone shows up in the LAN list. The
+  confirmation tells players the address + port to add by hand whenever it may not be listed. `allow-list=false` (stock
   1.26.5x ships it on with an empty list). *Use an existing Bedrock folder instead…* covers
   adopting an install made outside the app.
+- **✏ Rename** (between the strip and +): one dialog renames the selected local Server's Active
+  World (folder + `level-name`, i.e. what the strip shows), its list name (sidebar/Fleet) and,
+  optionally, `server-name` — that box starts ticked only while players still see the stock
+  "Dedicated Server" or the old name, so a name chosen on purpose is left alone. Greyed out with
+  the reason while the Server runs (its World folder moves).
 - **− Remove a Server**: first a picker of *every* local Server, nothing preselected, Servers
   with players online greyed out (`1 player online`); then a page listing exactly what goes
   (folder, Worlds, its own backups — never an older shared backup folder), a warning if it's
@@ -72,10 +79,10 @@ A resizable left pane, replacing the old single-Server assumption:
 ```
 🌐 Fleet (All Servers)
 🖥 This computer
-   🟢 Family Server        ← local Server profiles
-   ⚪ Creative Test
+   🟢 Server 1: Boas Familie Server   ← local Servers, labelled as on the top line
+   ⚪ Server 2: Kids Creative
 🖥 Boas-Laptop
-   🟢 Boas Familie Server  ← remote Server, same tabs as local
+   🟢 Server 1: Boas Familie Server   ← remote Server, same tabs as local
 🖥🔴 Old-PC                 ← configured but unreachable right now
 [➕ Machine]
 ```
@@ -89,6 +96,11 @@ A resizable left pane, replacing the old single-Server assumption:
   immediately (`save_config`), independent of the Server currently selected (hiding the sidebar
   never stops or deselects anything — `self.active_access` doesn't care whether the tree
   widget is currently packed into the pane).
+- **Labels** (3.1): every Server is `Server N: <Active World>` in the sidebar, the Fleet overview,
+  the Machine pages and their confirmations, exactly as on the top line, numbered per Machine
+  (`_machine_server_entries()`). A host reports each Server's Active World (`world`); an older
+  host doesn't, and its list name is shown instead. Adding, removing or renaming a Server on a
+  host is pushed to connected Administrators at once (`notify_servers_changed`).
 - **Selecting a Server** (local or remote) points the 7 tabs at it — same tabs, same controls,
   whether the Server is on this computer or across the LAN. A running/stopped dot follows it
   in the sidebar; switching away never stops it.
@@ -107,7 +119,7 @@ A resizable left pane, replacing the old single-Server assumption:
 |---|-----|------|-------|
 | 1 | **🎮 Server** *(home)* | See & run the Server | **Active Server Information** (name, Bedrock Server Version, Active World + its last-run version, gamemode, port, worlds) · Start/Stop/Restart · **🎲 Gamerules** dialog (reads the Active World's `level.dat`, applies live via `gamerule` commands — gamerules are per-World and are *not* `server.properties`) · **Active World dropdown** (existing Worlds only, plain names — the selected entry *is* the active World, no extra "(active)" tag; greys out while running with an inline "Not available until the running Server is stopped" hint — no static helper text while stopped) · network info · console (half height) with Quick buttons and **📍 Teleport** (two player pickers + Go; the console's `tp`, so cheats can stay off; the Server's answer is shown beside it, as for the game-mode buttons on Players) — all of it works identically for a remote Server |
 | 2 | **🌍 Worlds** | Create & manage Worlds | **✨ Create New World** (hero button — one small dialog: name + optional **seed**; ends by jumping to Active Server Configuration) · Worlds list with sizes, dates, **Last Run On** — the Active World is marked **✅ ACTIVE**; a created-but-not-yet-generated Active World shows as an orange *"created on next start"* pending row · **Set as Active World** (if the Server runs: confirm → stop nicely → switch → start again) · Rename / Delete (refuse a running Server; Delete refuses the Active World) — remote-capable |
-| 3 | **👥 Players** | Manage people | **Access**: allowlist editor + "restrict joining" toggle (writes `allow-list`, live `allowlist on/off`; empty-list warning; Bedrock has **no blacklist**) · **Roles**: `permissions.json` visitor/member/operator (live `permission reload`) · **Game mode per player** (live `gamemode` command → mixed modes; warns if `force-gamemode=true`). Names+XUIDs auto-learned from join lines into `known_players` (tolerant regex — wording varies by version), with a **🔍 Scan console** button that re-reads the whole buffer and backfills missing allowlist XUIDs. Remote-capable. |
+| 3 | **👥 Players** | Manage people | (3.1: the game-mode buttons show the Server's answer underneath — ✓ now in X / ✗ isn't online / no answer — fading after 20 s.) **Access**: allowlist editor + "restrict joining" toggle (writes `allow-list`, live `allowlist on/off`; empty-list warning; Bedrock has **no blacklist**) · **Roles**: `permissions.json` visitor/member/operator (live `permission reload`) · **Game mode per player** (live `gamemode` command → mixed modes; warns if `force-gamemode=true`). Names+XUIDs auto-learned from join lines into `known_players` (tolerant regex — wording varies by version), with a **🔍 Scan console** button that re-reads the whole buffer and backfills missing allowlist XUIDs. Remote-capable. |
 | 4 | **📝 Configuration** | Edit the Server | Page header: **Active Server Configuration**. `server.properties` editor (skips `level-name` — that's the Active World): every setting whose value is `true`/`false` is a checkbox (except free-text keys in `FREE_TEXT_KEYS` — `server-name`, `level-seed`, …), the rest are text fields, in file order. Settings Bedrock understands but its stock file omits are offered as checkboxes at the top (`OPTIONAL_CHECKBOXES`: `emit-server-telemetry`, `disable-client-vibrant-visuals`, and `chat-logging-enabled` marked *experimental*); one that isn't in the file and is left at Bedrock's default is never written. Natural stop between creating a World and first start (gamemode, difficulty…). Remote-capable — a save round-trips to the host and back. |
 | 5 | **💾 Backups** | Per-Server backups | Header **names the Server** and where backups live · **Backup Settings** (max kept / compress / auto-cleanup — moved here in 2.0, it's per-Server) · **What to back up** checklist (the preserve list — same list updates preserve) · backup list (~⅓ height) · restore/delete. Remote-capable. |
 | 6 | **🔄 Update** | Swap the Bedrock Server Version | `Installed: X · Latest: Y` (asked from Mojang, cached 10 min, 🔄 Check again) · one button: **⬆ Update to Y** / **⬇ Install Y** / **✓ Up to date** · **⬆ Update all Servers (N)** with two or more Servers · **Advanced ▸** (a specific ZIP, or *Enter a version…*; opens by itself if Mojang can't be reached) · Dry Run / Open Folder (small, right) · **Update Settings** (auto-stop/auto-start) · activity log. **Local-only, deliberately** — see Rationale. |

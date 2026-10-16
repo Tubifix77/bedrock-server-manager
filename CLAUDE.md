@@ -12,7 +12,7 @@ code is genuinely cross-platform — every OS-specific operation branches on `sy
 "win32"`.
 
 All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py)
-(~6450 lines). The other files are a desktop launcher, packaging scripts, docs, and license.
+(~6850 lines). The other files are a desktop launcher, packaging scripts, docs, and license.
 The version shown to users is `APP_VERSION_LABEL` (`APP_VERSION` + `APP_RELEASE_NAME`, e.g.
 `v2.0.1 "NetherNet"`); the remote-admin wire protocol and `app_version` fields use the plain
 `APP_VERSION`. A release bump touches `APP_VERSION`/`APP_RELEASE_NAME`, the fallbacks in
@@ -96,7 +96,11 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   reader+writer threads joined by a queue, so the writer is the sole socket writer) that
   authenticates a connection, dispatches ops to a `ServerService`, runs long ops
   (`stop`/`restart`/`create_backup`/`restore_backup`) in worker threads, and fans out events
-  (console, status, `servers_changed`, progress) with console-burst coalescing.
+  (console, status, `servers_changed`, progress) with console-burst coalescing. The host GUI
+  calls `watch_service()` for **every** local Server it builds (and all of them when Remote
+  Administration starts), so starts/stops are reported even for Servers no Administrator has
+  touched yet; `notify_servers_changed()` pushes the list after a Server is added, removed or
+  renamed. `remote_server_list()` entries carry `world` (Active World) — older hosts omit it.
   `MachineConnection` is the administrator side: one persistent, auto-reconnecting connection
   per remote Machine, with a worker thread that owns the socket and `request(op, ...)` calls
   from any thread blocking on an id-correlated result slot. **Its callbacks fire on the worker
@@ -118,9 +122,11 @@ The file is divided by `# ===` banner comments into these sections, top to botto
   Since 3.0 the **top line** holds the Server strip (`_strip_entries()`/`_layout_strip()`,
   `Server N: <Active World>`; N is display-only = position, renumbers after a removal; overflow
   into "▾ N more" with the selection kept visible) plus **+** (`new_server_dialog()` →
-  `_create_server_async()`: auto-download, port 19132 + LAN for the first Server, the next free
-  port pair + `enable-lan-visibility=false` for later ones, optional seed) and **−**
-  (`remove_server_dialog()`: pick any Server, typed-name confirm). The Update tab is one
+  `_create_server_async()`: auto-download, port 19132 for the first Server and the next free
+  port pair for later ones, "Show in LAN list" ticked by default, optional seed), **✏**
+  (`rename_server_dialog()` → `_rename_server()`: World folder + `level-name`, list name, and
+  optionally `server-name`; Server must be stopped) and **−** (`remove_server_dialog()`: pick any
+  Server, typed-name confirm). Opening Fleet or a Machine page redraws the strip too. The Update tab is one
   button driven by `_refresh_update_button()`, plus `update_all_servers()` with 2+ Servers.
   Tabs, in order: **Server** (home: Active Server Information, Active World dropdown,
   start/stop, 🎲 Gamerules dialog, console) / **Worlds** (create, rename, delete, per-World
@@ -223,6 +229,11 @@ best-effort reads and socket cleanup; anything that hides a real failure should 
 
 ## Gotchas
 
+- **The Server's answer next to the button** (game mode on Players, 📍 Teleport on Server):
+  `_await_reply(kind, access, …, interpret, …)` waits for the matching console line
+  (`_check_console_replies`, fed from both the local and the remote console paths, oldest
+  question first) and shows it in plain words; `_clear_stale_replies()` on a Server switch.
+  Reuse it for any new console-command button rather than writing another waiter.
 - **Tooltips** (`create_tooltip`) are one-at-a-time, with the auto-hide timer on `self.root` and
   closed on the widget's `<ButtonPress>`/`<Destroy>`: widgets that get rebuilt (the Server
   strip, on every status change) otherwise orphan a visible tooltip window. Keep it that way.
@@ -236,9 +247,12 @@ best-effort reads and socket cleanup; anything that hides a real failure should 
   by Docker images and distro packages too). If it ever breaks, the Update tab says so and opens
   Advanced, where `manual_version_input` (Wiki + typed version → guessed minecraft.net URL) is
   the fallback — keep that path working.
-- **One LAN-visible Server per Machine**: only the first-started Server gets UDP 7551 (LAN
-  discovery), on Windows and Linux alike, so + gives later Servers
-  `enable-lan-visibility=false` and players add them by IP + port.
+- **One LAN-listed Server per Machine at a time**: only the first-started Server gets UDP 7551
+  (LAN discovery), on Windows and Linux alike; the others still run and are reached by IP + port.
+  So `enable-lan-visibility=true` on several Servers is harmless, and + ticks it by default.
+- **Server labels come from one place**: `_machine_server_entries()` (`Server N: <Active World>`,
+  per Machine) feeds the top line, sidebar, Fleet, Machine pages and their confirmations. Don't
+  label a Server from `profile["name"]` anywhere new.
 - Remote administration is **LAN-only by design** — plaintext session after an HMAC-authenticated
   handshake, no TLS. Don't add internet-exposure features (port-forwarding helpers, etc.)
   without a real security redesign; the documented answer for reaching a Machine off-LAN is a

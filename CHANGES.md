@@ -25,6 +25,21 @@ All notable changes to this project will be documented here.
   allowlist, LAN visibility, …), plus any other setting whose value is `true`/`false`. Free-text
   settings that could hold those words (the Server's name, the seed) always stay text fields.
   Rows keep their order from the file, and saving without changes leaves the file untouched.
+- **The sidebar, 🌐 Fleet and Machine pages name Servers like the top line**: `Server N: <Active
+  World>`, numbered per Machine, instead of an old list name such as "Dedicated Server" — also
+  for Servers on another Machine (whose host now reports each Server's Active World; a host on an
+  older version shows its list name as before). Start/Stop confirmations use the same names, and
+  adding, removing or renaming a Server shows up on connected Administrators right away.
+- **"Show in Minecraft's LAN list" in the + window**, ticked by default for every new Server
+  (before, only the first Server was LAN-visible). Only one Server per computer can be listed at
+  a time — the one started first — so with it ticked, whichever Server runs alone shows up in
+  the LAN list; the others are still reached by IP and port.
+- **✏ Rename a Server**, next to + and − on the top line. One name for the selected Server: its
+  World (folder and Active World, so the top line changes), its name in the sidebar and 🌐 Fleet,
+  and — ticked by default while players still see Mojang's stock "Dedicated Server" or the old
+  name — the name players see in their server list. Handy after copying a World to a new Server.
+  The Server must be stopped (its World folder is renamed); a name another World already has is
+  refused, and a change of capitals only works too.
 - **📍 Teleport on the 🎮 Server tab**, under the console's Quick buttons: pick a player, pick who
   to move them to, press **Go**. It uses the console's `tp` command, so it works with cheats
   off and needs no Operator role. The pickers list who's online (or every known player when
@@ -37,6 +52,15 @@ All notable changes to this project will be documented here.
   you switch Server, and works the same for remote Servers.
 
 ### Fixed
+- **A remote Machine didn't hear about Servers started on the Machine itself.** A host only
+  reported a Server's starts and stops once an Administrator had used that Server, so a Server
+  started at the host stayed "Stopped" on the other computer. Every Server is reported now.
+- **Stop Selected did nothing for a remote Server** on the 🌐 Fleet and Machine pages: the row
+  assumed the Server was stopped, so the button quietly gave up. It now knows the Machine's last
+  reported state.
+- **Opening 🌐 Fleet or a Machine page left the top line on the previous Server** (still
+  highlighted, with ✏ usable). The top line now redraws: no Server highlighted on Fleet, and a
+  remote Machine's page shows that Machine's Servers.
 - **Yellow hover tips could get stuck on screen**, most often over the Server 1 / Server 2
   buttons. The top line rebuilds its buttons whenever a Server starts or stops; a tip showing at
   that moment lost both its "mouse left" event and its 2-second timer, and repeated hovering

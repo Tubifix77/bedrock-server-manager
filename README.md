@@ -35,8 +35,9 @@ New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyda
 
 - **Several Servers on one computer** — `Server 1: <World>`, `Server 2: …` on the top line; **+**
   downloads and installs a new one in a few clicks (new World with an optional seed, or a copy of
-  an existing one, its own port chosen for you), **−** removes one behind a typed confirmation.
-  Several can run at once, and a **🌐 Fleet overview** shows every Server across every machine
+  an existing one, its own port chosen for you), **✏** renames one, **−** removes one behind a
+  typed confirmation. Several can run at once, and the Machines panel and a **🌐 Fleet overview**
+  show every Server across every machine, named the same way
 - **Updates without homework** — the app asks Mojang for the newest Bedrock Server Version itself:
   `Installed · Latest` and one **Update** button, or **Update all Servers** at once
 - **Remote administration over your LAN** — pair another PC (host/IP + a pairing token) and
@@ -44,15 +45,17 @@ New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyda
   commands, worlds, players, configuration, backups. Or run a machine headless with `--agent`
 - **Server home tab** — Active Server Information at a glance, Start/Stop/Restart, live console
 - **Multi-world management** — create, switch (dropdown), rename and delete Worlds; shows each World's *last run on* version so you know what it needs
-- **Player management** — allowlist (who may join), roles (visitor/member/operator), and **per-player game mode** so survival and creative players share one Server
+- **Player management** — allowlist (who may join), roles (visitor/member/operator), and **per-player game mode** so survival and creative players share one Server — with the Server's answer shown right under the buttons
+- **📍 Teleport** — move one player to another from the Server tab, without turning cheats on
 - **Gamerules** — one-sleeper night skip, keep inventory, mob griefing, daylight cycle and more, read from the World and applied live
 - **Safe updates** — automatic backup before every update, selective file preservation; your
   `server.properties` is kept, and any new setting a Bedrock Server Version introduces (like
   `transport=nethernet` in 1.26.5x) is merged in automatically
 - **One window** — launching the app again just brings the open window to the front
 - **Backup management** — per-Server backups (namespaced so Servers never mix): create, restore, auto-cleanup, optional compression
-- **Server configuration editor** — edit `server.properties` in the GUI, locally or on a paired remote Server,
-  plus checkboxes for settings Mojang's file leaves out (telemetry, Vibrant Visuals, chat log)
+- **Server configuration editor** — edit `server.properties` in the GUI, locally or on a paired remote Server;
+  every on/off setting is a checkbox, plus checkboxes for settings Mojang's file leaves out (telemetry,
+  Vibrant Visuals, chat log)
 - **Cross-platform** — Windows and Linux
 
 ---

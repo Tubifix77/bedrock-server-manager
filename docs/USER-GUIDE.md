@@ -35,7 +35,7 @@ Backups to manage it, Update when a new Bedrock Server Version comes out.
 |---|---|
 | 🎮 **Server** | The home screen: what's running, Start/Stop/Restart, the Active World dropdown, **🎲 Gamerules**, and the live console (type commands at the bottom, or use the Quick buttons). **📍 Teleport** under the console moves one player to another — it works even with cheats off. |
 | 🌍 **Worlds** | Create (name + optional seed), rename, delete Worlds; see each one's size and which Bedrock Server Version it last ran on (a World won't load on an older engine than that). Switch the Active World here. |
-| 👥 **Players** | Allowlist (who's allowed to join), roles (visitor/member/operator), and per-player game mode (mix survival and creative players on one Server). Names are learned automatically as people join. |
+| 👥 **Players** | Allowlist (who's allowed to join), roles (visitor/member/operator), and per-player game mode (mix survival and creative players on one Server) — the Server's answer appears right under the buttons, e.g. "✓ Liv is now in Creative" or "✗ … isn't online". Names are learned automatically as people join. |
 | 📝 **Configuration** | The full `server.properties` editor — everything except `level-name`, which lives on the Active World dropdown instead. On/off settings are checkboxes, the rest are text fields. At the top, three checkboxes for settings Mojang's file leaves out: **telemetry**, **Vibrant Visuals** and a **chat log** (experimental) — see below. |
 | 💾 **Backups** | What gets backed up (the preserve checklist), your backup policy (how many to keep, compress or not), and the backup list itself with restore/delete. |
 | 🔄 **Update** | Shows `Installed: … · Latest: …` and one button — **⬆ Update to …** or **✓ Up to date**. With several Servers, **Update all Servers** does them all in one go. Backs up your preserved items first, always. **Local machines only** — see below. |
@@ -58,9 +58,13 @@ at the same time.
   **▾ N more**.
 - **+** makes a new Server (see *First run*). You can start it from a new World (with an
   optional seed) or from a copy of an existing World.
-- **Only the first Server shows up in Minecraft's LAN list.** That's a Bedrock limit: one per
-  computer. Players add the others under **Servers → Add Server** with this computer's address
-  and the port the app shows when the Server is created (19134, 19136, …).
+- **Only one Server per computer can be in Minecraft's LAN list at a time** — the one started
+  first. That's a Bedrock limit. **Show in Minecraft's LAN list** is ticked for every new Server
+  (and is the `enable-lan-visibility` box in 📝 Configuration), so a Server running on its own
+  always shows up. When several run, players add the others under **Servers → Add Server** with
+  this computer's address and the port the app shows when the Server is created (19134, 19136, …).
+- **✏** renames the selected Server: the name on the top line, in the sidebar and — if you tick
+  it — the name players see. Stop the Server first.
 - **−** removes a Server **for good**: choose which one, check the list of what will be deleted
   (its folder, its Worlds, its backups), and type the World's name to confirm. A Server with
   players on it can't be chosen. The numbers close up afterwards — remove Server 2, and Server 3
