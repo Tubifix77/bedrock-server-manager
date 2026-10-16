@@ -57,7 +57,7 @@ _LOG = logging.getLogger("bedrock_server_manager")
 # ============================================================================
 
 APP_NAME = "Bedrock Server Manager"
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 # Release name, shown next to the version everywhere a user sees it (window
 # title, About, Machine page). The wire protocol / app_version fields keep the
 # plain APP_VERSION.

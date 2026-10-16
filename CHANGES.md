@@ -4,7 +4,11 @@ All notable changes to this project will be documented here.
 
 ---
 
-## [Unreleased] — next release: 3.1
+## [3.1] "Servers" — 2026-10-17
+
+Polish from the first week of running several Servers for the family: friendlier Configuration,
+answers right where you press, teleport without cheats, renaming, and consistent Server names
+everywhere — plus fixes for administering one computer from another.
 
 ### Added
 - **Checkboxes for hidden settings in 📝 Configuration.** Three settings Bedrock understands, but
@@ -15,10 +19,13 @@ All notable changes to this project will be documented here.
     its "Telemetry is currently not enabled" message at every start while it's off;
     `=false` doesn't silence it.
   - **Turn off Vibrant Visuals for players** (`disable-client-vibrant-visuals`, on by default per
-    Microsoft's reference). Untick it to let players' devices use Vibrant Visuals.
+    Microsoft's reference). Untick it to let players' devices use Vibrant Visuals — confirmed in
+    the game: with it unticked a player could turn Vibrant Visuals on, with it ticked they couldn't.
   - **Save players' chat to a log file (experimental)** (`chat-logging-enabled`, off by default):
     `chat_logs/ChatLog_<date>.txt`. Mojang documents it only for Minecraft Education servers; the
-    vanilla engine has the same code, but it hasn't been verified with real player chat yet.
+    vanilla engine has the same code. **Tested with real chat on Bedrock Server Version 1.26.52.3:
+    no log is written yet** (no `chat_logs` folder, no chat file open). Kept, labelled
+    experimental, in case a later Bedrock Server Version switches it on; it does no harm.
 
 - **Every on/off setting in 📝 Configuration is now a checkbox** instead of a text field you had
   to type `true` or `false` into — 18 of them in Mojang's stock file (allow cheats, online mode,

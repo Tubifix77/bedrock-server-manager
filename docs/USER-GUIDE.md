@@ -126,7 +126,9 @@ mid-copy. Walk over to (or remote-desktop into) the machine itself to run an upd
     Visuals graphics (on devices that support it).
   - **Save players' chat to a log file (experimental)** — writes chat to
     `chat_logs/ChatLog_<date>.txt` in that Server's folder. Mojang documents it only for
-    Minecraft Education, so it may not work on a normal server.
+    Minecraft Education, and on Bedrock Server Version 1.26.52.3 it **doesn't write anything
+    yet** (tested with real chat). It's kept in case a later version switches it on — ticking it
+    does no harm.
 - **About seeds:** a seed decides the landscape of a *new* World — the same seed gives the same
   World. It can't change a World that already exists. Leave it empty for a random one.
 
