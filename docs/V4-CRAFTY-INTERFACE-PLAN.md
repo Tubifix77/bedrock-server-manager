@@ -1,6 +1,6 @@
 # 4.0 "Crafty Interface" — design note
 
-> **STATUS: BUILT, NOT RELEASED (2026-10-17).** Approved with the user in conversation, after
+> **STATUS: RELEASED as 4.0 (2026-10-17).** Approved with the user in conversation, after
 > clickable mockups: <https://claude.ai/artifact/D5xJSv7dBt6kbVh2jKzbJf> (private to the user).
 > Stages 0–4 are done and verified on Windows and Linux. Stage 0 picked **Silkscreen Bold**
 > (headings), **Pixelify Sans** (UI) and **Pixel Operator Mono** (console); Departure Mono wasn't

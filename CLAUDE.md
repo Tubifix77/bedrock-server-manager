@@ -17,7 +17,7 @@ The version shown to users is `APP_VERSION_LABEL` (`APP_VERSION` + `APP_RELEASE_
 `v2.0.1 "NetherNet"`); the remote-admin wire protocol and `app_version` fields use the plain
 `APP_VERSION`. A release bump touches `APP_VERSION`/`APP_RELEASE_NAME`, the fallbacks in
 `packaging/` and `.github/workflows/release.yml`, the README badge, and CHANGES.md.
-Versions are **two-part after 2.0.1** (current: **3.1 "Servers"**, next 3.2, 3.3, … — no patch
+Versions are **two-part after 2.0.1** (current: **4.0 "Crafty Interface"**, next 4.1, 4.2, … — no patch
 digit; the first number moves for a step as big *for users* as 1 → 2 was). `main` is the only
 branch, and releases are cut by pushing a `v*` tag. 3.0's design: `docs/V3-SERVERS-PLAN.md`.
 The same file also runs headless as a remote-administration host: `python3

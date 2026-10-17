@@ -4,7 +4,7 @@ All notable changes to this project will be documented here.
 
 ---
 
-## [Unreleased] — 4.0 "Crafty Interface"
+## [4.0] "Crafty Interface" — 2026-10-17
 
 A Minecraft-style look for the whole app, as an option: **Settings ▸ Interface ▸ Look and
 layout** now has three buttons — **Classic**, **New coat of paint** and **New layout**. The only

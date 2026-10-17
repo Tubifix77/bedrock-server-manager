@@ -23,7 +23,7 @@ Prefer to run from source? See **Quick Start** below. Build/release details are 
 
 New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyday use.
 
-> **Coming in 4.0 "Crafty Interface":** a Minecraft-style look as an option — Settings ▸ Interface
+> **New in 4.0 "Crafty Interface":** a Minecraft-style look as an option — Settings ▸ Interface
 > picks **Classic** (as now), **New coat of paint** or **New layout** (menu on the left, a
 > chat-style console, Teleport as its own page). See [`CHANGES.md`](CHANGES.md).
 >
