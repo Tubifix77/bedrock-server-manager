@@ -36,14 +36,17 @@ Design: [docs/V4-CRAFTY-INTERFACE-PLAN.md](docs/V4-CRAFTY-INTERFACE-PLAN.md).
   - **Configuration** has one row per setting with a plain title, an explanation and the
     setting's own name, grouped Players / World / Network / Extras / Advanced / Other (so a new
     Mojang setting still shows up), green sliders for numbers, dropdowns for choices, and an
-    "● Unsaved changes" bar with Undo and Save changes.
+    "● Unsaved changes" bar with Undo and Save changes;
+  - **every other page is rows too**: **Worlds** (one row per World, ACTIVE marked, with Set
+    active / Rename / Delete on the row), **Players** (one row per player, ONLINE or offline,
+    a role dropdown, Survival / Creative / Adventure, and off the allowlist; the Server's answer
+    appears under "Each player"), **Backups** (a switch per thing to back up, a slider for how
+    many to keep, and one row per backup with Restore / Delete / Open), **Update** (this Server,
+    all Servers, check again, the update switches, Advanced, progress and the activity log) and
+    **Settings** (Interface, Remote administration, this Server's folder, saving, about).
 - **Pixel fonts, built in**: Silkscreen and Pixelify Sans (SIL OFL 1.1) and Pixel Operator Mono
   (CC0), loaded for the app only — nothing is installed. Licences in `LICENSES/` and next to the
   unpacked fonts. If they can't be loaded, the new looks use the system fonts instead.
-
-### Not yet
-- In **New layout**, the Worlds, Players, Backups, Update and Settings pages keep their
-  current arrangement in the new colours and fonts, rather than one row per choice.
 
 ---
 

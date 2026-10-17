@@ -3507,10 +3507,11 @@ class BedrockUpdaterApp:
         if getattr(self, "look", "classic") == "crafty" and isinstance(event.widget, tk.Toplevel):
             self._paint_tk_widgets(event.widget)
 
-    def _build_interface_row(self, parent):
+    def _build_interface_row(self, parent, label: bool = True):
         """Settings ▸ Interface: the three looks; the active one is marked (green in Crafty)."""
         row = ttk.Frame(parent)
-        ttk.Label(row, text="Look and layout:").pack(side=tk.LEFT, padx=(0, 8))
+        if label:
+            ttk.Label(row, text="Look and layout:").pack(side=tk.LEFT, padx=(0, 8))
         self._look_var = tk.StringVar(value=self.ui_look)
         for key, text in (("classic", "Classic"), ("coat", "New coat of paint"), ("layout", "New layout")):
             self.choice_button(row, self._look_var, key, text=text,
@@ -3934,6 +3935,432 @@ class BedrockUpdaterApp:
         self.button(body, text="Close", command=dlg.destroy).pack(anchor="e", pady=(14, 0))
         dlg.bind("<Escape>", lambda e: dlg.destroy())
         self._paint_tk_widgets(dlg)
+
+    # --- New layout: one row per choice on every page (mockup 2) -------------------
+    # The rows reuse the tab layout's handlers unchanged. Lists (Worlds, players,
+    # backups) are kept in the same Treeviews as in the other looks, just never
+    # shown: a row's buttons select its item there and call the same method.
+
+    def _menu_scroll_page(self, tab):
+        """A scrolling column for a New layout page; returns the frame to fill."""
+        canvas = tk.Canvas(tab, highlightthickness=0, bd=0, bg=CRAFTY_SURFACE["bg"])
+        sb = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas, padding=(0, 0, 14, 14))
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        wheel_seqs = ("<MouseWheel>", "<Button-4>", "<Button-5>")
+
+        def wheel(e):
+            if canvas.yview() == (0.0, 1.0):
+                return
+            step = -1 if (getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0) else 1
+            canvas.yview_scroll(step * 3, "units")
+
+        def enter(e):
+            for seq in wheel_seqs:
+                canvas.bind_all(seq, wheel)
+
+        def leave(e):
+            # Moving onto a row is a <Leave> too; only let go once the pointer is off the page.
+            under = canvas.winfo_containing(*canvas.winfo_pointerxy())
+            if under is None or not str(under).startswith(str(canvas)):
+                for seq in wheel_seqs:
+                    canvas.unbind_all(seq)
+        canvas.bind("<Enter>", enter)
+        canvas.bind("<Leave>", leave)
+        return inner
+
+    def _menu_head(self, parent, title: str, desc: str = ""):
+        ttk.Label(parent, text=title, font=crafty_font("big")).pack(anchor="w")
+        d = ttk.Label(parent, text=desc, style="Dim.TLabel", wraplength=760, justify=tk.LEFT)
+        d.pack(anchor="w", pady=(4, 10))
+        return d
+
+    def _menu_section(self, parent, title: str, small: str = ""):
+        f = ttk.Frame(parent)
+        f.pack(fill=tk.X, pady=(18, 4))
+        ttk.Label(f, text=title.upper(), font=crafty_font("title")).pack(anchor="w")
+        if small:
+            ttk.Label(f, text=small, style="Dim.TLabel", wraplength=760, justify=tk.LEFT).pack(anchor="w")
+        return f
+
+    def _menu_item(self, parent, title: str, desc: str = ""):
+        """One row: title and a grey explanation on the left, the control on the right.
+        Returns (right, desc label, row box); box.left / box.title_row take extras."""
+        box = ttk.Frame(parent)
+        box.pack(fill=tk.X)
+        ttk.Separator(box).pack(fill=tk.X)
+        r = ttk.Frame(box)
+        r.pack(fill=tk.X, pady=8)
+        right = ttk.Frame(r)
+        right.pack(side=tk.RIGHT)
+        left = ttk.Frame(r)
+        left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        title_row = ttk.Frame(left)
+        title_row.pack(anchor="w")
+        ttk.Label(title_row, text=title, font=crafty_font("row")).pack(side=tk.LEFT)
+        d = ttk.Label(left, text=desc, style="Dim.TLabel", wraplength=520, justify=tk.LEFT)
+        d.pack(anchor="w", after=title_row)
+        self._hide_when_empty(d, anchor="w", after=title_row)
+        box.left, box.title_row = left, title_row
+        return right, d, box
+
+    @staticmethod
+    def _hide_when_empty(label, **pack):
+        """Keep a label out of the layout while its text is empty (a row without an
+        explanation, an answer line that hasn't been given yet), back once it has text."""
+        original = label.configure
+
+        def configure(cnf=None, **kw):
+            result = original(cnf, **kw)
+            if "text" in kw or (cnf and "text" in cnf):
+                if not str(label.cget("text")):
+                    label.pack_forget()
+                elif not label.winfo_manager():
+                    label.pack(**pack)
+            return result
+        label.configure = label.config = configure
+        if not str(label.cget("text")):
+            label.pack_forget()
+
+    def _menu_tag(self, box, text: str, on: bool = True):
+        """A small marker next to a row's title (ACTIVE, ONLINE, offline)."""
+        ttk.Label(box.title_row, text=text, font=crafty_font("bold" if on else "small"),
+                  foreground=CRAFTY["green_hi"] if on else CRAFTY["dim"]).pack(side=tk.LEFT, padx=(10, 0))
+
+    def _menu_slider(self, parent, var, lo: int, hi: int, unit: str = "", width: int = 260):
+        """A green slider bound to an IntVar both ways (a profile switch sets the var)."""
+        v = int(var.get())
+        lbl = ttk.Label(parent, text=f"{v}{unit}", width=6, anchor="e")
+
+        def moved(nv):
+            lbl.config(text=f"{nv}{unit}")
+            if int(var.get()) != int(nv):
+                var.set(int(nv))
+        slider = CraftySlider(parent, min(lo, v), max(hi, v), v, width=width, command=moved)
+        slider.pack(side=tk.LEFT)
+        lbl.pack(side=tk.LEFT, padx=(8, 0))
+
+        def follow(*_):
+            try:
+                if str(var.get()) != slider.get():
+                    slider.set(int(var.get()))
+            except (tk.TclError, ValueError):
+                pass
+        trace = var.trace_add("write", follow)
+        slider.bind("<Destroy>", lambda e: var.trace_remove("write", trace) if e.widget is slider else None, add="+")
+        return slider
+
+    def _tree_do(self, tree, iid, action, *args):
+        """A row's button: select its item in the (hidden) list, then run the same
+        handler the list's buttons run in the other looks."""
+        if tree.exists(iid):
+            tree.selection_set(iid)
+            tree.focus(iid)
+            action(*args)
+
+    def _menu_list(self, kind: str, parent):
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X)
+        self.__dict__.setdefault("_menu_lists", {})[kind] = frame
+        return frame
+
+    def _sync_menu_rows(self, kind: str):
+        """Rebuild a New layout list from its Treeview (after every refresh)."""
+        frame = self.__dict__.get("_menu_lists", {}).get(kind)
+        if self.layout != "menu" or frame is None or not frame.winfo_exists():
+            return
+        for w in frame.winfo_children():
+            w.destroy()
+        getattr(self, f"_menu_rows_{kind}")(frame)
+        self._paint_tk_widgets(frame)
+
+    # Worlds
+    def _setup_worlds_tab_menu(self):
+        p = self._menu_scroll_page(self.worlds_tab)
+        hidden = ttk.Frame(self.worlds_tab)   # never shown
+        self.world_tree = ttk.Treeview(hidden, columns=("name", "size", "last_modified", "version"), show="tree headings")
+        self.world_tree.bind("<<TreeviewSelect>>", self.on_world_select)
+        self.world_info_label = ttk.Label(hidden, text="")
+        self._menu_head(p, "WORLDS", "The saves this Server can load. Exactly one is active. A World won't load on a "
+                                     "Bedrock Server Version older than the one it last ran on.")
+        right, _, _ = self._menu_item(p, "Create a new World", "A name and an optional seed. Bedrock generates it on the next start.")
+        self.button(right, text="✨ Create", style="Primary.TButton", command=self.create_new_world).pack()
+        right, _, _ = self._menu_item(p, "Worlds folder", "Open it on this computer")
+        self.button(right, text="Open folder", command=self.open_worlds_folder).pack()
+        self._menu_section(p, "This Server's Worlds")
+        self._menu_list("worlds", p)
+        self._sync_menu_rows("worlds")
+
+    def _menu_rows_worlds(self, frame):
+        tree = self.world_tree
+        if not tree.get_children():
+            ttk.Label(frame, text="No Worlds yet.", style="Dim.TLabel").pack(anchor="w", pady=8)
+            return
+        for iid in tree.get_children():
+            name, size, changed, version = (str(v) for v in tree.item(iid, "values"))
+            tags = tree.item(iid, "tags")
+            active, pending = "active" in tags, "pending" in tags
+            desc = ("Made on the next start: set it up in Configuration, then Start" if pending
+                    else f"Last run on {version} · {size} · changed {changed}")
+            right, d, box = self._menu_item(frame, name, desc)
+            if pending:
+                d.configure(foreground=CRAFTY["warn"])
+            if active:
+                self._menu_tag(box, "ACTIVE")
+            b = self.button(right, text="Set active", command=lambda i=iid: self._tree_do(tree, i, self.set_selected_world_active))
+            b.pack(side=tk.LEFT, padx=2)
+            if active:
+                b.state(["disabled"])
+            self.button(right, text="Rename", command=lambda i=iid: self._tree_do(tree, i, self.rename_selected_world)).pack(side=tk.LEFT, padx=2)
+            b = self.button(right, text="Delete", command=lambda i=iid: self._tree_do(tree, i, self.delete_selected_world))
+            b.pack(side=tk.LEFT, padx=2)
+            if active:
+                b.state(["disabled"])
+
+    # Players
+    def _setup_players_tab_menu(self):
+        p = self._menu_scroll_page(self.players_tab)
+        hidden = ttk.Frame(self.players_tab)
+        self.allow_tree = ttk.Treeview(hidden, columns=("name", "xuid", "ignores_limit"), show="headings")
+        self.perm_tree = ttk.Treeview(hidden, columns=("name", "xuid", "permission"), show="headings")
+        self.perm_player_combo = ttk.Combobox(hidden)
+        self.gm_player_combo = ttk.Combobox(hidden)
+        self._menu_head(p, "PLAYERS", "Who may join, their role, and their game mode")
+        self.allowlist_var = tk.BooleanVar(value=False)
+        right, _, _ = self._menu_item(p, "Only players on the list may join",
+                                      "Bedrock has no blacklist: leaving someone off the list keeps them out")
+        self.check(right, variable=self.allowlist_var, command=self.toggle_allowlist_enforcement).pack()
+        right, _, _ = self._menu_item(p, "Add a player to the list", "By their exact Xbox gamertag")
+        self.button(right, text="Add", command=self.add_allowlist_player).pack()
+        sec = self._menu_section(p, "Each player", "A role, and a game mode that changes right away for a player who is online")
+        self.gm_feedback = ttk.Label(sec, text="", font=crafty_font("row"))
+        self._hide_when_empty(self.gm_feedback, anchor="w", pady=(4, 0))
+        self.gm_force_warn = ttk.Label(sec, text="", foreground=CRAFTY["bad"], wraplength=760, justify=tk.LEFT)
+        self._hide_when_empty(self.gm_force_warn, anchor="w")
+        self._reply_slot("gamemode", self.gm_feedback)
+        self._menu_list("players", p)
+        right, _, _ = self._menu_item(p, "Someone missing?", "Names and XUIDs are learned when players join; this re-reads the whole console")
+        self.button(right, text="Scan console", command=self.scan_console_for_players).pack()
+        self._sync_menu_rows("players")
+
+    def _menu_rows_players(self, frame):
+        names = list(self.gm_player_combo.cget("values"))
+        if not names:
+            ttk.Label(frame, text="Nobody has joined this Server yet. Names appear here when players join.",
+                      style="Dim.TLabel").pack(anchor="w", pady=8)
+            return
+        allow = {str(self.allow_tree.item(i, "values")[0]).lower(): i for i in self.allow_tree.get_children()}
+        perms = {str(self.perm_tree.item(i, "values")[0]).lower(): i for i in self.perm_tree.get_children()}
+        acc = self.active_access
+        try:
+            online = acc.online_players() if acc else None
+        except Exception:
+            online = None
+        online_low = {n.lower() for n in online} if online is not None else None
+        for name in names:
+            low = name.lower()
+            role = str(self.perm_tree.item(perms[low], "values")[2]) if low in perms else ""
+            on_list = low in allow
+            desc = f"Role: {role or 'the default for new players'} · {'on the list' if on_list else 'not on the list'}"
+            right, _, box = self._menu_item(frame, name, desc)
+            if online_low is not None:
+                self._menu_tag(box, "ONLINE" if low in online_low else "offline", low in online_low)
+            role_box = ttk.Combobox(right, state="readonly", width=9, values=["Default", "Visitor", "Member", "Operator"])
+            role_box.set(role.capitalize() if role else "Default")
+            role_box.bind("<<ComboboxSelected>>",
+                          lambda e, n=name, b=role_box: self.root.after_idle(lambda: self._menu_set_role(n, b.get())))
+            role_box.pack(side=tk.LEFT, padx=(0, 10))
+            self.create_tooltip(role_box, f"{name}'s role on this Server")
+            for mode in ("Survival", "Creative", "Adventure"):
+                self.button(right, text=mode, command=lambda n=name, m=mode.lower(): self._menu_set_gamemode(n, m)
+                            ).pack(side=tk.LEFT, padx=2)
+            if on_list:
+                self.button(right, text="Off the list",
+                            command=lambda i=allow[low]: self._tree_do(self.allow_tree, i, self.remove_allowlist_player)
+                            ).pack(side=tk.LEFT, padx=(10, 0))
+
+    def _menu_set_role(self, name: str, role: str):
+        if role == "Default":
+            iid = next((i for i in self.perm_tree.get_children()
+                        if str(self.perm_tree.item(i, "values")[0]).lower() == name.lower()), None)
+            if iid:
+                self._tree_do(self.perm_tree, iid, self.remove_permission_entry)
+            return
+        self.perm_player_combo.set(name)
+        self.set_player_permission(role.lower())
+
+    def _menu_set_gamemode(self, name: str, mode: str):
+        self.gm_player_combo.set(name)
+        self.set_player_gamemode(mode)
+
+    # Backups
+    def _setup_backup_tab_menu(self):
+        p = self._menu_scroll_page(self.backup_tab)
+        hidden = ttk.Frame(self.backup_tab)
+        self.backup_tree = ttk.Treeview(hidden, columns=("name", "date", "size"), show="headings")
+        self.backup_header_label = self._menu_head(p, "BACKUPS", "Backups for: (no Server selected)")
+        right, _, _ = self._menu_item(p, "Make a backup now", "Copies what's switched on below")
+        self.button(right, text="Create backup", style="Primary.TButton", command=self.manual_backup).pack()
+        self._menu_section(p, "What to back up", "Also what an update keeps")
+        self.preserve_inner = ttk.Frame(p)
+        self.preserve_inner.pack(fill=tk.X)
+        for item, props in self.config["preserve_items"].items():
+            var = tk.BooleanVar(value=props["enabled"])
+            self.preserve_vars[item] = var
+            right, _, _ = self._menu_item(self.preserve_inner, f"⭐ {item}" if props.get("critical") else item,
+                                          props.get("description", ""))
+            self.check(right, variable=var).pack()
+        self._menu_section(p, "Backup settings", "For this Server")
+        self.max_backups_var = tk.IntVar(value=self.config.get("max_backups", 5))
+        right, _, _ = self._menu_item(p, "Backups to keep", "The oldest ones are removed when there are more")
+        self._menu_slider(right, self.max_backups_var, 1, 50)
+        self.auto_cleanup_var = tk.BooleanVar(value=self.config.get("auto_cleanup_backups", True))
+        right, _, _ = self._menu_item(p, "Clean up after an update", "Removes the oldest backups once an update is done")
+        self.check(right, variable=self.auto_cleanup_var).pack()
+        self.compress_var = tk.BooleanVar(value=self.config.get("compress_backups", False))
+        right, _, _ = self._menu_item(p, "Compress backups", "ZIP files: smaller, but slower to make")
+        self.check(right, variable=self.compress_var).pack()
+        right, _, _ = self._menu_item(p, "Save these settings", "")
+        self.button(right, text="Save", style="Primary.TButton", command=self.save_settings).pack()
+        self._menu_section(p, "Backups")
+        self._menu_list("backups", p)
+        right, _, _ = self._menu_item(p, "Refresh the list", "Sizing every backup can take a moment")
+        self.button(right, text="Refresh", command=self.refresh_backups).pack()
+        right, _, _ = self._menu_item(p, "Clean up old backups", "Keeps only the newest ones, as many as set above")
+        self.button(right, text="Clean up", command=self.cleanup_backups).pack()
+        right, _, _ = self._menu_item(p, "Backups folder", "Open it on this computer")
+        self.button(right, text="Open folder", command=self.open_backup_folder).pack()
+        self._sync_menu_rows("backups")
+
+    def _menu_rows_backups(self, frame):
+        tree = self.backup_tree
+        if not tree.get_children():
+            ttk.Label(frame, text="No backups yet.", style="Dim.TLabel").pack(anchor="w", pady=8)
+            return
+        for iid in tree.get_children():
+            name, date, size = (str(v) for v in tree.item(iid, "values"))
+            right, _, _ = self._menu_item(frame, name, f"{date} · {size}")
+            for text, fn in (("Restore", self.restore_selected_backup), ("Delete", self.delete_selected_backup),
+                             ("Open", self.open_selected_backup)):
+                self.button(right, text=text, command=lambda i=iid, f=fn: self._tree_do(tree, i, f)).pack(side=tk.LEFT, padx=2)
+
+    # Update
+    def _setup_main_tab_menu(self):
+        p = self._menu_scroll_page(self.main_tab)
+        self._menu_head(p, "UPDATE", "The Bedrock Server Version: the game engine itself. Your Worlds survive an update.")
+        right, d, box = self._menu_item(p, "This Server", "Installed: —   ·   Latest: —")
+        self._update_this_row = box
+        self.update_version_label = d
+        self.update_state_label = ttk.Label(box.left, text="", style="Dim.TLabel", wraplength=520, justify=tk.LEFT)
+        self.update_state_label.pack(anchor="w")
+        self._hide_when_empty(self.update_state_label, anchor="w")
+        self.update_button = self.button(right, text="Update", command=self.start_update, style="Primary.TButton")
+        self.update_button.pack()
+        right, _, self._update_all_row = self._menu_item(p, "All Servers on this computer",
+                                                         "One after the other, each backed up first")
+        self.update_all_button = self.button(right, text="Update all Servers", command=self.update_all_servers)
+        self.update_all_button.pack()
+        right, _, _ = self._menu_item(p, "Check for a new version", "Asks Mojang for the newest release")
+        self.button(right, text="Check again", command=lambda: self.refresh_update_status(force=True)).pack()
+        self._menu_section(p, "When updating", "For this Server")
+        self.auto_stop_var = tk.BooleanVar(value=self.config.get("auto_stop_server_before_update", True))
+        right, _, _ = self._menu_item(p, "Stop the Server first", "It's stopped nicely, then updated")
+        self.check(right, variable=self.auto_stop_var).pack()
+        self.auto_start_var = tk.BooleanVar(value=self.config.get("auto_start_server_after_update", False))
+        right, _, _ = self._menu_item(p, "Start it again afterwards", "")
+        self.check(right, variable=self.auto_start_var).pack()
+        right, _, _ = self._menu_item(p, "Save these settings", "")
+        self.button(right, text="Save", style="Primary.TButton", command=self.save_settings).pack()
+        right, _, box = self._menu_item(p, "Advanced", "A specific ZIP, or type a version (if Mojang can't be reached)")
+        self.advanced_toggle = self.button(right, text="Advanced ▸", command=self._toggle_update_advanced)
+        self.advanced_toggle.pack()
+        holder = ttk.Frame(box)
+        holder.pack(fill=tk.X)
+        holder.columnconfigure(0, weight=1)
+        self._build_update_advanced(holder)
+        self._menu_section(p, "Progress")
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(p, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill=tk.X, pady=(4, 2))
+        self.progress_label = ttk.Label(p, text="Ready")
+        self.progress_label.pack(anchor="w")
+        right, _, _ = self._menu_item(p, "Dry run", "Shows what an update would do, without changing anything")
+        self.button(right, text="Dry run", command=self.dry_run).pack()
+        right, _, _ = self._menu_item(p, "Server folder", "Open it on this computer")
+        self.button(right, text="Open folder", command=self.open_server_folder).pack()
+        self._menu_section(p, "Activity log")
+        log_frame = ttk.Frame(p, height=220)
+        log_frame.pack(fill=tk.X)
+        log_frame.pack_propagate(False)
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        self._build_activity_log(log_frame)
+
+    # Settings
+    def _setup_settings_tab_menu(self):
+        p = self._menu_scroll_page(self.settings_tab)
+        self._menu_head(p, "SETTINGS", "For the whole app, on this computer")
+        self._menu_section(p, "Interface")
+        right, _, _ = self._menu_item(p, "Look and layout", "Classic is always here if one of the new looks misbehaves")
+        self._build_interface_row(right, label=False).pack()
+        self.font_size_var = tk.IntVar(value=self.config.get("console_font_size", 9))
+        right, _, _ = self._menu_item(p, "Console text size in the other looks",
+                                      "Classic and New coat of paint. The chat console here has its own size under ⚙.")
+        ttk.Spinbox(right, from_=6, to=24, width=6, textvariable=self.font_size_var).pack()
+        self.notifications_var = tk.BooleanVar(value=self.config.get("show_notifications", True))
+        right, _, _ = self._menu_item(p, "Show notification messages", "")
+        self.check(right, variable=self.notifications_var).pack()
+        self.dark_mode_var = tk.BooleanVar(value=self.config.get("dark_mode", False))
+        right, _, _ = self._menu_item(p, "🌙 Dark mode", "The new looks are always dark; Classic can be light or dark")
+        self.check(right, variable=self.dark_mode_var, command=self.toggle_dark_mode, state="disabled").pack()
+        self.check_updates_var = tk.BooleanVar(value=self.config.get("check_updates_on_start", True))
+        right, _, _ = self._menu_item(p, "Look for a new Bedrock Server Version at start", "")
+        self.check(right, variable=self.check_updates_var).pack()
+
+        ra_cfg = self.config.setdefault("remote_admin", {"enabled": False, "port": REMOTE_DEFAULT_PORT, "token": ""})
+        self._menu_section(p, "Remote administration", "Let another computer on your home network run these Servers")
+        self.remote_enabled_var = tk.BooleanVar(value=bool(ra_cfg.get("enabled")))
+        right, _, box = self._menu_item(p, "Allow it", "Home network only: don't port-forward this. On the other computer, "
+                                                       "➕ Machine with this computer's address and the token.")
+        self.check(right, variable=self.remote_enabled_var, command=self.toggle_remote_admin).pack()
+        self.remote_status_label = ttk.Label(box.left, text="", style="Dim.TLabel")
+        self.remote_status_label.pack(anchor="w")
+        self._hide_when_empty(self.remote_status_label, anchor="w")
+        self.remote_port_var = tk.IntVar(value=ra_cfg.get("port", REMOTE_DEFAULT_PORT))
+        right, _, _ = self._menu_item(p, "Port", "")
+        ttk.Spinbox(right, from_=1024, to=65535, width=8, textvariable=self.remote_port_var).pack()
+        self.remote_token_var = tk.StringVar(value=ra_cfg.get("token", "") or "(generated when enabled)")
+        right, _, _ = self._menu_item(p, "Pairing token", "The other computer needs it once, to pair")
+        ttk.Entry(right, textvariable=self.remote_token_var, state="readonly", width=20).pack(side=tk.LEFT, padx=(0, 6))
+        self.button(right, text="Copy", command=self.copy_remote_token).pack(side=tk.LEFT, padx=2)
+        self.button(right, text="New token", command=self.regenerate_remote_token).pack(side=tk.LEFT, padx=2)
+
+        self._menu_section(p, "This Server's folder")
+        right, _, box = self._menu_item(p, "Folder", "Moves the selected Server to another folder. To add a Server, use + at the top right.")
+        self.server_entry = ttk.Entry(box.left)
+        self.server_entry.pack(fill=tk.X, pady=(6, 0))
+        self.server_entry.bind("<KeyRelease>", self.validate_inputs)
+        self.server_status = ttk.Label(box.left, text="", foreground=self.fg("gray"))
+        self.server_status.pack(anchor="w")
+        self._hide_when_empty(self.server_status, anchor="w")
+        self.button(right, text="Browse", command=self.browse_server).pack()
+
+        self._menu_section(p, "Saving")
+        right, _, _ = self._menu_item(p, "Save settings", "The settings on this page are kept when you press Save")
+        self.button(right, text="Save", style="Primary.TButton", command=self.save_settings).pack()
+        right, _, _ = self._menu_item(p, "Reset to defaults", "Puts the settings on this page back")
+        self.button(right, text="Reset", command=self.reset_settings).pack()
+        right, _, _ = self._menu_item(p, "Settings file", "Open it in a text editor")
+        self.button(right, text="Open", command=self.open_config_file).pack()
+
+        self._menu_section(p, "About")
+        self._menu_item(p, f"{APP_NAME} {APP_VERSION_LABEL}",
+                        f"{APP_AUTHOR}. A tool for managing Minecraft Bedrock Dedicated Servers.")
 
     def set_window_icon(self):
         """Show minecraft.png as the window/taskbar icon.
@@ -5411,6 +5838,9 @@ class BedrockUpdaterApp:
         self.refresh_sidebar()
 
     def setup_main_tab(self):
+        if self.layout == "menu":   # one row per choice (mockup 2)
+            self._setup_main_tab_menu()
+            return
         self.main_tab.columnconfigure(0, weight=1)
         
         header = ttk.Frame(self.main_tab)
@@ -5441,16 +5871,7 @@ class BedrockUpdaterApp:
 
         # Advanced: a specific ZIP or a manually entered version. Only needed if
         # the automatic check can't reach Mojang (it opens by itself then).
-        self.advanced_frame = ttk.Frame(version_frame)
-        self.advanced_frame.columnconfigure(1, weight=1)
-        ttk.Label(self.advanced_frame, text="Bedrock Server ZIP:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
-        self.zip_entry = ttk.Entry(self.advanced_frame)
-        self.zip_entry.grid(row=0, column=1, sticky="ew", padx=5)
-        self.zip_entry.bind("<KeyRelease>", self.validate_inputs)
-        self.button(self.advanced_frame, text="Browse", command=self.browse_zip).grid(row=0, column=2, padx=5)
-        self.button(self.advanced_frame, text="Enter a version…", command=self.manual_version_input).grid(row=0, column=3, padx=5)
-        self.zip_status = ttk.Label(self.advanced_frame, text="", foreground=self.fg("gray"))
-        self.zip_status.grid(row=1, column=1, sticky="w", padx=5)
+        self._build_update_advanced(version_frame)
 
         # Per-Server update policy (docs/V2-MAJORDOMO-PLAN.md) -- lives here,
         # not the app-level Settings tab, since it's specific to this Server.
@@ -5485,6 +5906,23 @@ class BedrockUpdaterApp:
         self.main_tab.rowconfigure(6, weight=1)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
+        self._build_activity_log(log_frame)
+
+    def _build_update_advanced(self, parent):
+        """Update ▸ Advanced (hidden until opened): a specific ZIP or a typed version.
+        Only needed if the automatic check can't reach Mojang (it opens by itself then)."""
+        self.advanced_frame = ttk.Frame(parent)
+        self.advanced_frame.columnconfigure(1, weight=1)
+        ttk.Label(self.advanced_frame, text="Bedrock Server ZIP:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        self.zip_entry = ttk.Entry(self.advanced_frame)
+        self.zip_entry.grid(row=0, column=1, sticky="ew", padx=5)
+        self.zip_entry.bind("<KeyRelease>", self.validate_inputs)
+        self.button(self.advanced_frame, text="Browse", command=self.browse_zip).grid(row=0, column=2, padx=5)
+        self.button(self.advanced_frame, text="Enter a version…", command=self.manual_version_input).grid(row=0, column=3, padx=5)
+        self.zip_status = ttk.Label(self.advanced_frame, text="", foreground=self.fg("gray"))
+        self.zip_status.grid(row=1, column=1, sticky="w", padx=5)
+
+    def _build_activity_log(self, log_frame):
         log_scroll = ttk.Scrollbar(log_frame)
         log_scroll.grid(row=0, column=1, sticky="ns")
         self.log_text = tk.Text(log_frame, height=8, wrap=tk.WORD, state=tk.DISABLED,
@@ -5577,6 +6015,9 @@ class BedrockUpdaterApp:
         self._reply_slot("teleport", self.tp_feedback)
     
     def setup_backup_tab(self):
+        if self.layout == "menu":   # one row per choice (mockup 2)
+            self._setup_backup_tab_menu()
+            return
         self.backup_tab.columnconfigure(0, weight=1)
         self.backup_tab.rowconfigure(4, weight=1)
         self.backup_header_label = ttk.Label(self.backup_tab, text="Backups for: (no Server selected)",
@@ -5645,6 +6086,9 @@ class BedrockUpdaterApp:
         self.button(action_frame, text="📂 Open in Explorer", command=self.open_selected_backup).pack(side=tk.LEFT, padx=5)
     
     def setup_worlds_tab(self):
+        if self.layout == "menu":   # one row per choice (mockup 2)
+            self._setup_worlds_tab_menu()
+            return
         self.worlds_tab.columnconfigure(0, weight=1)
         self.worlds_tab.rowconfigure(1, weight=1)
         control_frame = ttk.Frame(self.worlds_tab)
@@ -5957,6 +6401,9 @@ class BedrockUpdaterApp:
         self.update_server_info()
 
     def setup_players_tab(self):
+        if self.layout == "menu":   # one row per choice (mockup 2)
+            self._setup_players_tab_menu()
+            return
         self.players_tab.columnconfigure(0, weight=1)
         # --- Access: the allowlist (Bedrock's only join control — there is no blacklist) ---
         access = ttk.LabelFrame(self.players_tab, text="Access — who may join (allowlist.json)", padding=10)
@@ -6062,6 +6509,7 @@ class BedrockUpdaterApp:
             self.perm_player_combo.config(values=[])
             self.gm_player_combo.config(values=[])
             self.gm_force_warn.config(text="")
+            self._sync_menu_rows("players")
             return
         try:
             data = acc.get_players()
@@ -6083,6 +6531,7 @@ class BedrockUpdaterApp:
         fg = bool(data.get("force_gamemode"))
         self.gm_force_warn.config(text=("⚠ force-gamemode=true resets everyone to the default mode on every join — "
                                         "set it to false in 📝 Configuration to allow mixed modes." if fg else ""))
+        self._sync_menu_rows("players")
 
     def _scan_console_line(self, line: str):
         """Learn name<->XUID pairs live from console output, for the Players tab."""
@@ -6459,6 +6908,9 @@ class BedrockUpdaterApp:
         self.log(f"gamerule {rule} = {value}", "success")
 
     def setup_settings_tab(self):
+        if self.layout == "menu":   # one row per choice (mockup 2)
+            self._setup_settings_tab_menu()
+            return
         # Backup policy moved to 💾 Backups and the two update toggles to
         # 🔄 Update (docs/V2-MAJORDOMO-PLAN.md, "Per-server settings leave the
         # Settings tab") -- they're per-Server, so they now live beside the
@@ -7676,6 +8128,7 @@ class BedrockUpdaterApp:
         for backup in backups:
             self.backup_tree.insert("", tk.END, values=(backup["name"], backup["date"], backup["size"]),
                                    tags=(str(backup["path"]),))
+        self._sync_menu_rows("backups")
     
     def _selected_backup_path(self):
         """The full path (host-side for remote) stored on the selected row's tag."""
@@ -7800,6 +8253,7 @@ class BedrockUpdaterApp:
         self._active_bold = tkfont.Font(font=base)
         self._active_bold.configure(weight="bold")
         self.world_tree.tag_configure("active", font=self._active_bold)
+        self._sync_menu_rows("worlds")
     
     def on_world_select(self, event):
         selected = self.world_tree.selection()
@@ -7940,11 +8394,16 @@ class BedrockUpdaterApp:
     def _refresh_update_all_button(self):
         if not hasattr(self, 'update_all_button'):
             return
+        menu_row = getattr(self, "_update_all_row", None) if self.layout == "menu" else None
+        shown = menu_row if menu_row is not None else self.update_all_button
         if len(self.config.get("server_profiles", {})) < 2:
-            self.update_all_button.pack_forget()
+            shown.pack_forget()
             return
-        if not self.update_all_button.winfo_manager():
-            self.update_all_button.pack(side=tk.LEFT, padx=(8, 0), after=self.update_button)
+        if not shown.winfo_manager():
+            if menu_row is not None:   # New layout: the whole row comes and goes
+                menu_row.pack(fill=tk.X, after=self._update_this_row)
+            else:
+                self.update_all_button.pack(side=tk.LEFT, padx=(8, 0), after=self.update_button)
         zip_path, release, version = self._update_source()
         if self.is_updating or self.active_remote or not (zip_path or release):
             text, enabled = "Update all Servers", False

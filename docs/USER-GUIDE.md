@@ -39,7 +39,8 @@ Backups to manage it, Update when a new Bedrock Server Version comes out.
   dropdowns, and I/O switches instead of checkboxes. The selected Server at the top gets a green
   outline.
 - **New layout** — Minecraft's settings screen: a menu on the left, one choice per row on the
-  right, Bedrock's light buttons, **Machines** as a page of its own, a console that looks like
+  right on every page (each World, player and backup is a row with its own buttons), Bedrock's
+  light buttons, **Machines** as a page of its own, a console that looks like
   the game's chat (⚙ for its options), and **📍 Teleport** as its own page with big buttons for
   each player.
 

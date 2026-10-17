@@ -4,8 +4,8 @@
 > clickable mockups: <https://claude.ai/artifact/D5xJSv7dBt6kbVh2jKzbJf> (private to the user).
 > Stages 0–4 are done and verified on Windows and Linux. Stage 0 picked **Silkscreen Bold**
 > (headings), **Pixelify Sans** (UI) and **Pixel Operator Mono** (console); Departure Mono wasn't
-> needed. Still open from Stage 5: in the menu layout, Worlds / Players / Backups / Update /
-> Settings keep their current arrangement in the Crafty skin rather than one row per choice.
+> needed. Stage 5 is done too: every menu-layout page is rows (Worlds, Players, Backups, Update
+> and Settings were folded into the 4.0 release the same night).
 > After the first try on the laptop both looks were reworked to match their mockups exactly, and
 > every tab and button is now drawn (`CraftyTab` / `CraftyButton` / `CraftyRadio`) for the
 > bevel and the text shadow.

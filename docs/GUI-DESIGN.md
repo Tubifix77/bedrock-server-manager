@@ -102,6 +102,12 @@ or Minecraft's own selected option; that rule holds for every choice in the Craf
   Fleet overview as its own page (no menu, ‹ Back, + Add Machine). Teleport is an extra page
   there; in the tab layout it stays on the Server tab. The console is a chat-style screen on the
   Server page; its options are display-only.
+- **Every menu-layout page is rows** (`_menu_item`: title, grey explanation, control on the
+  right; `_menu_section` headers; `_menu_scroll_page` scrolls). The rows reuse the tab layout's
+  handlers unchanged: lists (Worlds, players, backups) still fill the same Treeviews, which are
+  simply never shown, and `_sync_menu_rows(kind)` rebuilds the rows after every refresh; a row
+  button selects its item there (`_tree_do`) and calls the same method. An explanation or answer
+  line with no text takes no space (`_hide_when_empty`).
 
 ## Sidebar (Machines → Servers, plus Fleet)
 
