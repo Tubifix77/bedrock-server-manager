@@ -29,6 +29,27 @@ Backups to manage it, Update when a new Bedrock Server Version comes out.
 
 ---
 
+## Choosing a look
+
+**⚙️ Settings ▸ Interface ▸ Look and layout** has three buttons:
+
+- **Classic** — the app as it has always looked (light, or dark with 🌙 Dark mode).
+- **New coat of paint** — the same tabs, in Minecraft's style: dark panels, pixel fonts, grey
+  stone buttons with shadowed white text (the chosen tab and ▶ Start in green), Minecraft
+  dropdowns, and I/O switches instead of checkboxes. The selected Server at the top gets a green
+  outline.
+- **New layout** — Minecraft's settings screen: a menu on the left, one choice per row on the
+  right, Bedrock's light buttons, **Machines** as a page of its own, a console that looks like
+  the game's chat (⚙ for its options), and **📍 Teleport** as its own page with big buttons for
+  each player.
+
+Both new looks are always dark (🌙 Dark mode is greyed out there); Classic keeps light and dark.
+
+It changes straight away; your Servers keep running. If something ever looks wrong in one of the
+new looks, **Classic** is always one click away.
+
+---
+
 ## The seven tabs
 
 | Tab | What you do there |

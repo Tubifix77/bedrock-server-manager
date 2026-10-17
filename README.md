@@ -3,7 +3,7 @@
 A comprehensive cross-platform GUI application for managing Minecraft Bedrock Dedicated
 Servers — one, or a whole fleet across your home network.
 
-![Version](https://img.shields.io/badge/version-3.1-blue)
+![Version](https://img.shields.io/badge/version-4.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11+-green)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -23,6 +23,10 @@ Prefer to run from source? See **Quick Start** below. Build/release details are 
 
 New to the app? [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) walks through everyday use.
 
+> **Coming in 4.0 "Crafty Interface":** a Minecraft-style look as an option — Settings ▸ Interface
+> picks **Classic** (as now), **New coat of paint** or **New layout** (menu on the left, a
+> chat-style console, Teleport as its own page). See [`CHANGES.md`](CHANGES.md).
+>
 > **New in 3.1:** every on/off setting in Configuration is a checkbox (plus telemetry and Vibrant
 > Visuals), the game-mode buttons and the new **📍 Teleport** (no cheats needed) show the Server's
 > answer right where you press, **✏** renames a Server, and Servers carry the same

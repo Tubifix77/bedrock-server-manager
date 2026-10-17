@@ -12,7 +12,7 @@ code is genuinely cross-platform — every OS-specific operation branches on `sy
 "win32"`.
 
 All application logic lives in [`bedrock_updater_linux.py`](bedrock_updater_linux.py)
-(~6850 lines). The other files are a desktop launcher, packaging scripts, docs, and license.
+(~8550 lines of code, then ~1800 lines of embedded fonts). The other files are a desktop launcher, packaging scripts, docs, and license.
 The version shown to users is `APP_VERSION_LABEL` (`APP_VERSION` + `APP_RELEASE_NAME`, e.g.
 `v2.0.1 "NetherNet"`); the remote-admin wire protocol and `app_version` fields use the plain
 `APP_VERSION`. A release bump touches `APP_VERSION`/`APP_RELEASE_NAME`, the fallbacks in
@@ -234,6 +234,18 @@ best-effort reads and socket cleanup; anything that hides a real failure should 
   (`_check_console_replies`, fed from both the local and the remote console paths, oldest
   question first) and shows it in plain words; `_clear_stale_replies()` on a Server switch.
   Reuse it for any new console-command button rather than writing another waiter.
+- **Looks (4.0)**: `ui_look` = classic | coat | layout → `self.look` (classic | crafty) and
+  `self.layout` (tabs | menu). In widget code use **`self.fg(colour)`, `self.font(size, weight)`
+  `self.check(...)`, `self.button(...)` and `self.choice_button(...)`** instead of literal
+  colours, `("TkDefaultFont", …)` tuples, `ttk.Checkbutton`, `ttk.Button` or Toolbutton radios —
+  Classic gets exactly the old widgets and values, Crafty its palette, pixel fonts, I/O toggles
+  and drawn `CraftyButton`/`CraftyRadio` canvases (bevel + text shadow; ttk can't draw those).
+  Each Crafty look copies its approved mockup (coat = mockup 1's stone, layout = mockup 2's
+  light Bedrock buttons) — check a screenshot against it before calling a look change done. Plain tk widgets created later in Crafty need `self._paint_tk_widgets(frame)`
+  (dialogs are painted on `<Map>`). The menu layout keeps the `ttk.Notebook` (tab row hidden), so
+  `notebook.select(...)` works everywhere; pages are in `self._pages`. Switching looks rebuilds
+  the window (`_rebuild_ui`) — never keep widget references outside the widget tree. The fonts
+  are embedded at the end of the file (`_EMBEDDED_FONTS`, licences in `LICENSES/`).
 - **Tooltips** (`create_tooltip`) are one-at-a-time, with the auto-hide timer on `self.root` and
   closed on the widget's `<ButtonPress>`/`<Destroy>`: widgets that get rebuilt (the Server
   strip, on every status change) otherwise orphan a visible tooltip window. Keep it that way.

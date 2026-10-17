@@ -72,6 +72,37 @@ Information (with ⚠ when a World is newer than the installed Bedrock Server Ve
   binary *and* `server.properties`, never a drive root or home) — such an entry is only taken
   off the list. Disabled with a single Server.
 
+## Looks (4.0 "Crafty Interface")
+
+Settings ▸ Interface ▸ **Look and layout**: Classic / New coat of paint / New layout (`ui_look` =
+`classic` | `coat` | `layout`). Internally two switches: **look** (classic | crafty) × **layout**
+(tabs | menu). The chosen one is shown **green only — no checkmark**, the same as a selected tab
+or Minecraft's own selected option; that rule holds for every choice in the Crafty looks.
+
+- **Switching rebuilds the window in place** (`_rebuild_ui`): everything that matters lives
+  outside the widgets (contexts, connections, config, access objects), so the selected Server,
+  the page and the console come back and nothing stops. Unsaved Configuration edits ask first.
+- **Classic is the fallback and stays first-class**: identical to 3.1, and the Interface row is
+  there in every look, so Classic is always one click away.
+- **Crafty** is its own ttk theme (`crafty`, based on clam), dark only, with the pixel fonts
+  loaded privately for the process. Colours/fonts the code sets go through `self.fg()` /
+  `self.font()`; checkboxes through `self.check()` (an I/O `ToggleRow` in Crafty).
+- **Each Crafty look follows its approved mockup** (artifact linked in the 4.0 plan): New coat
+  of paint = mockup 1 (stone #8b8b8b buttons and tabs with white, shadowed text on #313233
+  blocks); New layout = mockup 2 (light #d0d1d4 Bedrock buttons with dark text on the #48494a
+  pane). Green = Primary/chosen in both.
+- **Every button is drawn** (ttk can't shadow text): `self.button(...)` gives a ttk.Button in
+  Classic and a `CraftyButton` canvas in Crafty, with the same options and calls (`text`,
+  `command`, `style` Primary/Danger/Small/Big, `width`, `image`, `state`, `config`, `cget`,
+  `instate`, `invoke`). Groups (Server strip, Interface row) use `self.choice_button(...)` →
+  `CraftyRadio`: the strip's selected Server gets a green **outline**, a choice turns green.
+  The coat tab row is `CraftyTab`s. Never create a `ttk.Button` directly in tab code.
+- **The menu layout keeps the `ttk.Notebook`** with its tab row hidden (`Menu.TNotebook`); the
+  left menu just selects pages, so everything that selects a tab still works. Machines = the
+  Fleet overview as its own page (no menu, ‹ Back, + Add Machine). Teleport is an extra page
+  there; in the tab layout it stays on the Server tab. The console is a chat-style screen on the
+  Server page; its options are display-only.
+
 ## Sidebar (Machines → Servers, plus Fleet)
 
 A resizable left pane, replacing the old single-Server assumption:

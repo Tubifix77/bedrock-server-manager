@@ -4,6 +4,49 @@ All notable changes to this project will be documented here.
 
 ---
 
+## [Unreleased] — 4.0 "Crafty Interface"
+
+A Minecraft-style look for the whole app, as an option: **Settings ▸ Interface ▸ Look and
+layout** now has three buttons — **Classic**, **New coat of paint** and **New layout**. The only
+new feature is that switch; everything else is new graphics for what the app already does.
+Design: [docs/V4-CRAFTY-INTERFACE-PLAN.md](docs/V4-CRAFTY-INTERFACE-PLAN.md).
+
+### Added
+- **The look switch.** Changes right away, with no restart: running Servers keep running, a paired
+  Machine stays connected, and you stay on the same Server and page. If Configuration has unsaved
+  changes, it asks first. Upgrading keeps **Classic**, which is today's look, unchanged.
+- **New coat of paint**: today's layout in Minecraft's style (the first mockup) — dark panels with
+  a black frame and a title strip, pixel fonts, and **every tab and button a grey stone button**
+  with a thick bevel and white text with a dark shadow (Start and the selected tab in green),
+  Minecraft dropdowns (light field, black ▼), the selected Server outlined in green so its running
+  dot stays visible, and **every checkbox an I/O switch** (mouse and keyboard). Dialogs and hover
+  tips follow the look.
+- **New layout**: the Server strip stays on top, a **menu on the left** (Play: Server, Worlds,
+  Players, **Teleport** · Set-up: Configuration, Backups, Update · General: Settings) with small
+  pixel icons, Bedrock's own light buttons (the second mockup: dark text, a thick dark bottom
+  edge; the green ones with shadowed white text), and:
+  - **Machines** is a page of its own (every Machine and its Servers, + Add Machine, ‹ Back);
+  - the **Server** page has one row per thing (status, Active World, gamerules, address,
+    console) and a preview of the console;
+  - the **console looks like Minecraft's chat** — ‹ Back, the lines, and a bottom bar with ⚙,
+    the input field and Send. ⚙ opens **Console options**: follow new lines, show times, only
+    joins and my commands, the Quick commands, and the text size (all display-only);
+  - **Teleport** is a page for the kids: big buttons for who should move and to whom (offline
+    players greyed out), a big green **Teleport!**, and the Server's answer next to it;
+  - **Configuration** has one row per setting with a plain title, an explanation and the
+    setting's own name, grouped Players / World / Network / Extras / Advanced / Other (so a new
+    Mojang setting still shows up), green sliders for numbers, dropdowns for choices, and an
+    "● Unsaved changes" bar with Undo and Save changes.
+- **Pixel fonts, built in**: Silkscreen and Pixelify Sans (SIL OFL 1.1) and Pixel Operator Mono
+  (CC0), loaded for the app only — nothing is installed. Licences in `LICENSES/` and next to the
+  unpacked fonts. If they can't be loaded, the new looks use the system fonts instead.
+
+### Not yet
+- In **New layout**, the Worlds, Players, Backups, Update and Settings pages keep their
+  current arrangement in the new colours and fonts, rather than one row per choice.
+
+---
+
 ## [3.1] "Servers" — 2026-10-17
 
 Polish from the first week of running several Servers for the family: friendlier Configuration,
